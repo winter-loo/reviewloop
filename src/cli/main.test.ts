@@ -1,0 +1,43 @@
+import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+function createRepo() {
+	const repo = mkdtempSync(path.join(os.tmpdir(), 'ltsql-review-cli-repo-'));
+	execFileSync('git', ['init'], { cwd: repo });
+	execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+	execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repo });
+	writeFileSync(path.join(repo, 'case.sql'), 'select 1;\n');
+	execFileSync('git', ['add', 'case.sql'], { cwd: repo });
+	execFileSync('git', ['commit', '-m', 'initial'], { cwd: repo });
+	writeFileSync(path.join(repo, 'case.sql'), 'select 1;\nselect 2;\n');
+	return repo;
+}
+
+describe('ltsql-review CLI', () => {
+	it('publishes and lists a worktree review', () => {
+		const repo = createRepo();
+		const home = mkdtempSync(path.join(os.tmpdir(), 'ltsql-review-cli-home-'));
+		const env = { ...process.env, LTSQL_REVIEW_HOME: home };
+
+		const publishOutput = execFileSync(
+			'node',
+			['--import', 'tsx', 'src/cli/main.ts', 'publish', '--repo', repo, '--type', 'worktree', '--title', 'cli smoke'],
+			{ cwd: process.cwd(), env }
+		).toString();
+
+		expect(publishOutput).toContain('Created review CR-');
+		const reviewId = /Created review (CR-\d{8}-\d{4})/.exec(publishOutput)?.[1];
+		expect(reviewId).toBeTruthy();
+
+		const listOutput = execFileSync('node', ['--import', 'tsx', 'src/cli/main.ts', 'list'], {
+			cwd: process.cwd(),
+			env
+		}).toString();
+		expect(listOutput).toContain(reviewId!);
+		expect(listOutput).toContain('cli smoke');
+	});
+});

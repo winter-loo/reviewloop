@@ -1,10 +1,9 @@
-import { env } from '$env/dynamic/private';
 import os from 'node:os';
 import path from 'node:path';
 
-/** Root directory for durable review DB and artifact snapshots. */
+/** Root directory for durable review DB and artifact snapshots. Works in both SvelteKit and CLI contexts. */
 export function reviewHome() {
-	return env.LTSQL_REVIEW_HOME || path.join(os.homedir(), '.ltsql-review');
+	return process.env.LTSQL_REVIEW_HOME || path.join(os.homedir(), '.ltsql-review');
 }
 
 /** Directory containing immutable per-review/version artifacts. */
