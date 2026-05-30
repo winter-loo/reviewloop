@@ -79,6 +79,11 @@ async function main() {
 			console.log(`Created review ${result.review.id}`);
 			console.log(`URL: ${result.url}`);
 			console.log(`Files: ${result.files.length}`);
+			if (result.files.length === 0 && sourceKind === 'worktree') {
+				console.log(
+					'Hint: worktree review only captures uncommitted changes. For committed LTSQL work, publish a commit range, e.g. --range "refs/remotes/git-svn..HEAD".'
+				);
+			}
 			return;
 		}
 

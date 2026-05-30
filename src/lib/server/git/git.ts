@@ -5,6 +5,16 @@ export interface GitCommandResult {
 	stderr: string;
 }
 
+export interface GitCommitSummary {
+	sha: string;
+	shortSha: string;
+	authorName: string;
+	authorEmail: string;
+	authorDate: string;
+	subject: string;
+	message: string;
+}
+
 const MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 /**
@@ -86,6 +96,33 @@ export async function captureRangeDiff(repoRoot: string, range: string) {
 		'--no-color',
 		range
 	]);
+	return result.stdout;
+}
+
+export async function listRangeCommits(repoRoot: string, range: string): Promise<GitCommitSummary[]> {
+	const result = await runGit(repoRoot, ['log', '--reverse', '--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%B%x1e', range]);
+	return parseCommitLog(result.stdout);
+}
+
+export async function getCommitSummary(repoRoot: string, ref: string): Promise<GitCommitSummary | null> {
+	const result = await runGit(repoRoot, ['log', '-1', '--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%B%x1e', ref]);
+	return parseCommitLog(result.stdout)[0] ?? null;
+}
+
+function parseCommitLog(stdout: string): GitCommitSummary[] {
+	return stdout
+		.split('\x1e')
+		.map((record) => record.trim())
+		.filter(Boolean)
+		.map((record) => {
+			const [sha, shortSha, authorName, authorEmail, authorDate, subject, ...messageParts] = record.split('\x1f');
+			const message = messageParts.join('\x1f').trim() || subject;
+			return { sha, shortSha, authorName, authorEmail, authorDate, subject, message };
+		});
+}
+
+export async function captureCommitDiff(repoRoot: string, sha: string) {
+	const result = await runGit(repoRoot, ['show', '--format=', '--no-ext-diff', '--find-renames', '--no-color', sha]);
 	return result.stdout;
 }
 

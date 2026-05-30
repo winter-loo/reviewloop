@@ -1,4 +1,5 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
+import type { SQLInputValue } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { dbPath as defaultDbPath } from './paths';
@@ -49,9 +50,13 @@ function toComment(row: Record<string, unknown>): ReviewCommentRecord {
 	};
 }
 
+function sqlParams(values: Record<string, SQLInputValue>): Record<string, SQLInputValue> {
+	return values;
+}
+
 export interface ReviewStore {
 	home: string;
-	db: Database.Database;
+	db: DatabaseSync;
 	insertReview(review: ReviewRecord): void;
 	insertVersion(version: ReviewVersionRecord): void;
 	listReviews(): ReviewRecord[];
@@ -65,8 +70,8 @@ export interface ReviewStore {
 export function createReviewStore(home?: string): ReviewStore {
 	const resolvedHome = home ?? path.dirname(defaultDbPath());
 	mkdirSync(resolvedHome, { recursive: true });
-	const db = new Database(path.join(resolvedHome, 'reviews.db'));
-	db.pragma('journal_mode = WAL');
+	const db = new DatabaseSync(path.join(resolvedHome, 'reviews.db'));
+	db.exec('PRAGMA journal_mode = WAL');
 	db.exec(schemaSql);
 
 	return {
@@ -76,13 +81,36 @@ export function createReviewStore(home?: string): ReviewStore {
 			db.prepare(
 				`INSERT INTO reviews (id, title, repo_root, source_kind, source_ref, status, created_by, created_at, updated_at)
 				 VALUES (@id, @title, @repoRoot, @sourceKind, @sourceRef, @status, @createdBy, @createdAt, @updatedAt)`
-			).run(review);
+			).run(
+				sqlParams({
+					id: review.id,
+					title: review.title,
+					repoRoot: review.repoRoot,
+					sourceKind: review.sourceKind,
+					sourceRef: review.sourceRef,
+					status: review.status,
+					createdBy: review.createdBy,
+					createdAt: review.createdAt,
+					updatedAt: review.updatedAt
+				})
+			);
 		},
 		insertVersion(version) {
 			db.prepare(
 				`INSERT INTO review_versions (id, review_id, version, base_commit, head_commit, diff_path, files_path, created_at)
 				 VALUES (@id, @reviewId, @version, @baseCommit, @headCommit, @diffPath, @filesPath, @createdAt)`
-			).run(version);
+			).run(
+				sqlParams({
+					id: version.id,
+					reviewId: version.reviewId,
+					version: version.version,
+					baseCommit: version.baseCommit,
+					headCommit: version.headCommit,
+					diffPath: version.diffPath,
+					filesPath: version.filesPath,
+					createdAt: version.createdAt
+				})
+			);
 		},
 		listReviews() {
 			return db.prepare('SELECT * FROM reviews ORDER BY updated_at DESC').all().map((row) => toReview(row as Record<string, unknown>));
@@ -107,7 +135,22 @@ export function createReviewStore(home?: string): ReviewStore {
 			db.prepare(
 				`INSERT INTO comments (id, review_id, version, file_path, side, line_start, line_end, body, author, status, created_at, updated_at)
 				 VALUES (@id, @reviewId, @version, @filePath, @side, @lineStart, @lineEnd, @body, @author, @status, @createdAt, @updatedAt)`
-			).run(comment);
+			).run(
+				sqlParams({
+					id: comment.id,
+					reviewId: comment.reviewId,
+					version: comment.version,
+					filePath: comment.filePath,
+					side: comment.side,
+					lineStart: comment.lineStart,
+					lineEnd: comment.lineEnd,
+					body: comment.body,
+					author: comment.author,
+					status: comment.status,
+					createdAt: comment.createdAt,
+					updatedAt: comment.updatedAt
+				})
+			);
 		},
 		close() {
 			db.close();

@@ -10,24 +10,23 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"test": "vitest run"
+		"test": "vitest run",
+		"build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist-cli/ltsql-review.js --banner:js='#!/usr/bin/env node' && chmod +x dist-cli/ltsql-review.js",
+		"package:ltsql": "npm run check && npm test && npm run build && npm run build:cli && bash scripts/package-ltsql.sh"
 	},
 	"bin": {
 		"ltsql-review": "./bin/ltsql-review.js"
 	},
 	"devDependencies": {
-		"@sveltejs/adapter-auto": "^7.0.1",
+		"@sveltejs/adapter-node": "^5.5.4",
 		"@sveltejs/kit": "^2.57.0",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
-		"@types/better-sqlite3": "^7.6.13",
+		"esbuild": "^0.28.0",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",
 		"tsx": "^4.22.3",
 		"typescript": "^6.0.2",
 		"vite": "^8.0.7",
 		"vitest": "^4.1.7"
-	},
-	"dependencies": {
-		"better-sqlite3": "^12.10.0"
 	}
 }
