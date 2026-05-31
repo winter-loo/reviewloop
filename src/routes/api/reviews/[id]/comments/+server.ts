@@ -34,6 +34,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (!Number.isInteger(lineStart) || lineStart < 1) {
 		throw error(400, 'lineStart must be a positive integer for inline review comments');
 	}
+	const lineEnd = body.lineEnd === undefined ? lineStart : Number(body.lineEnd);
+	if (!Number.isInteger(lineEnd) || lineEnd < lineStart) {
+		throw error(400, 'lineEnd must be an integer greater than or equal to lineStart');
+	}
 	const now = new Date().toISOString();
 	const comment = {
 		id: randomUUID(),
@@ -42,7 +46,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		filePath: body.filePath.trim(),
 		side: body.side,
 		lineStart,
-		lineEnd: body.lineEnd ?? lineStart,
+		lineEnd,
 		body: body.body.trim(),
 		author: body.author ?? 'anonymous',
 		status: 'open' as const,

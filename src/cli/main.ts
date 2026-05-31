@@ -39,7 +39,7 @@ function usage() {
 Commands:
   publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title>
   list
-  add-comment --review <id> --file <path> --line <n> --side old|new --body <text> [--author <name>]
+  add-comment --review <id> --file <path> --line <n> [--line-end <n>] --side old|new --body <text> [--author <name>]
   comments --review <id> --json
 `;
 }
@@ -69,6 +69,8 @@ function createCommentFromFlags(flags: Map<string, string | boolean>, reviewId: 
 	if (!filePath) throw new Error('--file is required for inline review comments');
 	const lineStart = optionalPositiveInt(stringFlag(flags, 'line'), '--line');
 	if (!lineStart) throw new Error('--line is required for inline review comments');
+	const lineEnd = optionalPositiveInt(stringFlag(flags, 'line-end'), '--line-end') ?? lineStart;
+	if (lineEnd < lineStart) throw new Error('--line-end must be greater than or equal to --line');
 	const side = commentSide(stringFlag(flags, 'side') ?? 'new');
 	if (side === 'file') throw new Error('--side must be old or new for inline review comments');
 	const now = new Date().toISOString();
@@ -79,7 +81,7 @@ function createCommentFromFlags(flags: Map<string, string | boolean>, reviewId: 
 		filePath,
 		side,
 		lineStart,
-		lineEnd: lineStart,
+		lineEnd,
 		body,
 		author: stringFlag(flags, 'author') ?? process.env.USER ?? 'anonymous',
 		status: 'open',

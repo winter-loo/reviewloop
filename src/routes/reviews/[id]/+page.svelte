@@ -59,10 +59,18 @@
 		commentable: boolean;
 	};
 
+	type CommentAnchor = {
+		side: 'old' | 'new';
+		lineStart: number;
+		lineEnd: number;
+		insertAfterIndex: number;
+		label: string;
+	};
+
 	type DiffDisplayItem =
 		| { type: 'diff'; key: string; row: DiffRow }
 		| { type: 'comment'; key: string; row: DiffRow; comment: ReviewComment }
-		| { type: 'composer'; key: string; row: DiffRow };
+		| { type: 'composer'; key: string; anchor: CommentAnchor };
 
 	const latestVersion = $derived(data.latestVersion!);
 	const commits = $derived((data.commits ?? []) as ReviewCommit[]);
@@ -78,7 +86,10 @@
 	let reviewed = $state<Record<string, boolean>>({});
 	let comments = $state<ReviewComment[]>([]);
 	let commentAuthor = $state('reviewer');
-	let activeDraftKey = $state<string | null>(null);
+	let activeDraftAnchor = $state<CommentAnchor | null>(null);
+	let dragStartAnchor = $state<CommentAnchor | null>(null);
+	let dragCurrentAnchor = $state<CommentAnchor | null>(null);
+	let dragPointerId = $state<number | null>(null);
 	let commentBody = $state('');
 	let commentError = $state<string | null>(null);
 	let commentSubmitting = $state(false);
@@ -124,7 +135,10 @@
 	const selectedFileComments = $derived(
 		comments.filter((comment) => comment.filePath === selectedFile?.path && comment.status === 'open')
 	);
-	const displayItems = $derived(buildDiffDisplayItems(diffRows, selectedFileComments, activeDraftKey));
+	const dragPreviewAnchor = $derived(
+		dragStartAnchor && dragCurrentAnchor ? normalizedRangeAnchor(dragStartAnchor, dragCurrentAnchor) : dragStartAnchor
+	);
+	const displayItems = $derived(buildDiffDisplayItems(diffRows, selectedFileComments, activeDraftAnchor));
 
 	function formatBytes(bytes = 0) {
 		if (bytes < 1024) return `${bytes} B`;
@@ -179,27 +193,63 @@
 		});
 	}
 
-	function rowCommentKey(row: DiffRow) {
-		return `${row.side ?? 'file'}:${row.lineNumber ?? row.index}`;
+	function anchorKey(anchor: CommentAnchor) {
+		return `${anchor.side}:${anchor.lineStart}:${anchor.lineEnd}:${anchor.insertAfterIndex}`;
 	}
 
 	function commentsForRow(row: DiffRow, rowComments: ReviewComment[]) {
-		if (!row.commentable || row.lineNumber === null || row.side === null) return [];
-		return rowComments.filter((comment) => comment.side === row.side && comment.lineStart === row.lineNumber);
+		if (row.lineNumber === null || row.side === null) return [];
+		return rowComments.filter((comment) => comment.side === row.side && (comment.lineEnd ?? comment.lineStart) === row.lineNumber);
 	}
 
-	function buildDiffDisplayItems(rows: DiffRow[], rowComments: ReviewComment[], draftKey: string | null): DiffDisplayItem[] {
+	function buildDiffDisplayItems(rows: DiffRow[], rowComments: ReviewComment[], draftAnchor: CommentAnchor | null): DiffDisplayItem[] {
 		const items: DiffDisplayItem[] = [];
 		for (const row of rows) {
 			items.push({ type: 'diff', key: `diff:${row.index}`, row });
 			for (const comment of commentsForRow(row, rowComments)) {
 				items.push({ type: 'comment', key: `comment:${comment.id}`, row, comment });
 			}
-			if (draftKey === rowCommentKey(row)) {
-				items.push({ type: 'composer', key: `composer:${rowCommentKey(row)}`, row });
+			if (draftAnchor?.insertAfterIndex === row.index) {
+				items.push({ type: 'composer', key: `composer:${anchorKey(draftAnchor)}`, anchor: draftAnchor });
 			}
 		}
 		return items;
+	}
+
+	function lineAnchor(row: DiffRow): CommentAnchor | null {
+		if (!row.commentable || row.side === null || row.lineNumber === null) return null;
+		return { side: row.side, lineStart: row.lineNumber, lineEnd: row.lineNumber, insertAfterIndex: row.index, label: `Line ${row.lineNumber}` };
+	}
+
+	function normalizedRangeAnchor(start: CommentAnchor, end: CommentAnchor): CommentAnchor | null {
+		if (start.side !== end.side) return null;
+		const lineStart = Math.min(start.lineStart, end.lineStart);
+		const lineEnd = Math.max(start.lineEnd, end.lineEnd);
+		return {
+			side: start.side,
+			lineStart,
+			lineEnd,
+			insertAfterIndex: Math.max(start.insertAfterIndex, end.insertAfterIndex),
+			label: `Lines ${lineStart}-${lineEnd}`
+		};
+	}
+
+	function anchorLabel(anchor: CommentAnchor) {
+		const prefix = anchor.lineStart === anchor.lineEnd ? 'Line' : 'Lines';
+		const range = anchor.lineStart === anchor.lineEnd ? `${anchor.lineStart}` : `${anchor.lineStart}-${anchor.lineEnd}`;
+		return `${prefix} ${range} · ${anchor.side === 'old' ? 'LEFT' : 'RIGHT'}`;
+	}
+
+	function commentLabel(comment: ReviewComment) {
+		const lineEnd = comment.lineEnd ?? comment.lineStart;
+		const prefix = comment.lineStart === lineEnd ? 'Line' : 'Lines';
+		const range = comment.lineStart === lineEnd ? `${comment.lineStart}` : `${comment.lineStart}-${lineEnd}`;
+		return `${prefix} ${range} · ${comment.side === 'old' ? 'LEFT' : 'RIGHT'}`;
+	}
+
+	function rowInAnchorRange(row: DiffRow, anchor: CommentAnchor | null) {
+		if (!anchor || row.side !== anchor.side || row.lineNumber === null) return false;
+		return row.lineNumber >= anchor.lineStart && row.lineNumber <= anchor.lineEnd;
 	}
 
 	function lineLabel(row: DiffRow, side: 'old' | 'new') {
@@ -207,20 +257,84 @@
 		return line === null ? '' : String(line);
 	}
 
+	function resetDragSelection() {
+		dragStartAnchor = null;
+		dragCurrentAnchor = null;
+		dragPointerId = null;
+	}
+
+	function rowFromPointer(event: PointerEvent) {
+		const element = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.diff-line[data-row-index]');
+		const rowIndex = element ? Number(element.dataset.rowIndex) : Number.NaN;
+		return Number.isFinite(rowIndex) ? diffRows.find((row) => row.index === rowIndex) : null;
+	}
+
+	function updateDragCurrent(event: PointerEvent) {
+		if (dragPointerId !== event.pointerId || !dragStartAnchor) return;
+		const row = rowFromPointer(event);
+		const anchor = row ? lineAnchor(row) : null;
+		if (anchor && anchor.side === dragStartAnchor.side) {
+			dragCurrentAnchor = anchor;
+		}
+	}
+
 	async function startInlineComment(row: DiffRow) {
-		if (!row.commentable) return;
-		activeDraftKey = rowCommentKey(row);
+		const anchor = lineAnchor(row);
+		if (!anchor) return;
+		activeDraftAnchor = anchor;
+		resetDragSelection();
 		commentBody = '';
 		commentError = null;
 		await tick();
-		// Opening a composer near the bottom of the virtualized diff can place the
-		// Save/Cancel row below the visible scrollport. Bring the full composer into
-		// view so both actions are immediately clickable.
+		// Opening a composer near the bottom of the diff can place the Save/Cancel
+		// row below the visible scrollport. Bring the full composer into view.
 		document.querySelector('form.inline-comment.composer')?.scrollIntoView({ block: 'nearest' });
 	}
 
+	async function finishDragComment(row: DiffRow) {
+		const anchor = lineAnchor(row);
+		if (!anchor) return;
+		const range = dragStartAnchor ? normalizedRangeAnchor(dragStartAnchor, anchor) : anchor;
+		if (!range) return;
+		activeDraftAnchor = range;
+		resetDragSelection();
+		commentBody = '';
+		commentError = null;
+		await tick();
+		document.querySelector('form.inline-comment.composer')?.scrollIntoView({ block: 'nearest' });
+	}
+
+	function startPlusDrag(event: PointerEvent, row: DiffRow) {
+		const anchor = lineAnchor(row);
+		if (!anchor) return;
+		event.preventDefault();
+		dragStartAnchor = anchor;
+		dragCurrentAnchor = anchor;
+		dragPointerId = event.pointerId;
+		activeDraftAnchor = null;
+		(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+	}
+
+	function movePlusDrag(event: PointerEvent) {
+		updateDragCurrent(event);
+	}
+
+	async function endPlusDrag(event: PointerEvent, row: DiffRow) {
+		if (dragPointerId !== event.pointerId) return;
+		event.preventDefault();
+		updateDragCurrent(event);
+		(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+		const targetAnchor = dragCurrentAnchor ?? lineAnchor(row);
+		if (!targetAnchor) {
+			resetDragSelection();
+			return;
+		}
+		await finishDragComment({ ...row, side: targetAnchor.side, lineNumber: targetAnchor.lineStart, commentable: true, index: targetAnchor.insertAfterIndex });
+	}
+
 	function cancelInlineComment() {
-		activeDraftKey = null;
+		activeDraftAnchor = null;
+		resetDragSelection();
 		commentBody = '';
 		commentError = null;
 	}
@@ -299,11 +413,11 @@
 		}
 	}
 
-	async function submitInlineComment(row: DiffRow) {
+	async function submitInlineComment(anchor: CommentAnchor) {
 		commentError = null;
 		const body = commentBody.trim();
-		if (!selectedFile || !row.commentable || row.side === null || row.lineNumber === null) {
-			commentError = 'Select a concrete diff line before commenting.';
+		if (!selectedFile || !anchor) {
+			commentError = 'Select a concrete diff range before commenting.';
 			return;
 		}
 		if (!body) {
@@ -317,9 +431,9 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					filePath: selectedFile.path,
-					side: row.side,
-					lineStart: row.lineNumber,
-					lineEnd: row.lineNumber,
+					side: anchor.side,
+					lineStart: anchor.lineStart,
+					lineEnd: anchor.lineEnd,
 					body,
 					author: commentAuthor.trim() || 'reviewer'
 				})
@@ -501,12 +615,26 @@
 						{#each displayItems as item (item.key)}
 							<div class="diff-item">
 								{#if item.type === 'diff'}
-									<div class={`diff-line ${item.row.kind}`} class:commentable={item.row.commentable}>
+									<div
+										class={`diff-line ${item.row.kind}`}
+										class:commentable={item.row.commentable}
+										class:range-pending={rowInAnchorRange(item.row, dragPreviewAnchor)}
+										class:range-active={rowInAnchorRange(item.row, activeDraftAnchor)}
+										data-row-index={item.row.index}
+									>
 										<span class="line-no old-no">{lineLabel(item.row, 'old')}</span>
 										<span class="line-no new-no">{lineLabel(item.row, 'new')}</span>
 										<span class="comment-gutter">
 											{#if item.row.commentable}
-												<button title="Add line comment" aria-label={`Add comment on ${selectedFile?.path}:${item.row.lineNumber}`} onclick={() => startInlineComment(item.row)}>+</button>
+												<button
+													title="Add line comment; drag to select a line range"
+													aria-label={`Add comment on ${selectedFile?.path}:${item.row.lineNumber}; drag to select a line range`}
+													onpointerdown={(event) => startPlusDrag(event, item.row)}
+													onpointermove={movePlusDrag}
+													onpointerup={(event) => void endPlusDrag(event, item.row)}
+													onpointercancel={resetDragSelection}
+												>+</button
+												>
 											{/if}
 										</span>
 										<code>{item.row.text || ' '}</code>
@@ -515,16 +643,16 @@
 									<article class="inline-comment">
 										<div class="comment-meta">
 											<strong>{item.comment.author}</strong>
-											<span>Line {item.comment.lineStart} · {item.comment.side === 'old' ? 'LEFT' : 'RIGHT'}</span>
+											<span>{commentLabel(item.comment)}</span>
 											<time datetime={item.comment.createdAt}>{new Date(item.comment.createdAt).toLocaleString()}</time>
 										</div>
 										<p>{item.comment.body}</p>
 									</article>
 								{:else}
-									<form class="inline-comment composer" onsubmit={(event) => { event.preventDefault(); void submitInlineComment(item.row); }}>
+									<form class="inline-comment composer" onsubmit={(event) => { event.preventDefault(); void submitInlineComment(item.anchor); }}>
 										<div class="comment-meta">
 											<strong>New review comment</strong>
-											<span>Line {item.row.lineNumber} · {item.row.side === 'old' ? 'LEFT' : 'RIGHT'}</span>
+											<span>{anchorLabel(item.anchor)}</span>
 										</div>
 										<div class="composer-fields">
 											<input bind:value={commentAuthor} aria-label="Comment author" placeholder="reviewer" />
@@ -558,7 +686,7 @@
 			</div>
 			<span class="count-pill">{comments.length}</span>
 		</div>
-		<p class="comment-filter-note">Use the <strong>+</strong> button beside a diff line to add a GitHub-style review comment. Comments are anchored by path, side, and line, and exported by <code>ltsql-review comments --review {data.review.id} --json</code>.</p>
+		<p class="comment-filter-note">Use <strong>+</strong> for a single-line comment, or press and drag <strong>+</strong> across diff lines before releasing to choose a line range. Comments are anchored by path, side, and line range, and exported by <code>ltsql-review comments --review {data.review.id} --json</code>.</p>
 		{#if comments.length === 0}
 			<p class="empty-comment">No inline comments yet.</p>
 		{:else}
@@ -804,9 +932,10 @@
 	}
 	.commit-message {
 		margin: 4px 0 0;
-		max-height: min(42vh, 26rem);
-		overflow: auto;
-		overscroll-behavior: contain;
+		/* Let the active commit row grow so the full message is visible; the
+		 * surrounding commit list already owns vertical scrolling for the rail. */
+		max-height: none;
+		overflow: visible;
 		white-space: pre-wrap;
 		word-break: break-word;
 		background: transparent;
@@ -959,6 +1088,7 @@
 		position: sticky;
 		left: 108px;
 		display: inline-flex;
+		gap: 3px;
 		justify-content: center;
 		padding-right: 0;
 	}
@@ -975,8 +1105,14 @@
 		opacity: 0;
 	}
 	.diff-line.commentable:hover .comment-gutter button,
+	.diff-line.header:hover .comment-gutter button,
 	.comment-gutter button:focus-visible {
 		opacity: 1;
+	}
+	.diff-line.range-pending code,
+	.diff-line.range-active code {
+		box-shadow: inset 3px 0 0 #f59e0b;
+		background: rgb(245 158 11 / 0.13);
 	}
 	.added code {
 		color: #86efac;
@@ -1024,8 +1160,8 @@
 		margin-left: 142px;
 		margin-right: 20px;
 		margin-bottom: 6px;
-		width: min(760px, calc(100dvw - 224px));
-		max-width: calc(100dvw - 224px);
+		width: min(760px, calc(100dvw - 248px));
+		max-width: calc(100dvw - 248px);
 		padding: 8px 10px;
 		border: 1px solid #bfdbfe;
 		border-radius: 8px;

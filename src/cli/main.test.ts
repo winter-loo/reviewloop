@@ -66,6 +66,8 @@ describe('ltsql-review CLI', () => {
 				'case.sql',
 				'--line',
 				'2',
+				'--line-end',
+				'3',
 				'--side',
 				'new',
 				'--author',
@@ -84,7 +86,7 @@ describe('ltsql-review CLI', () => {
 		const payload = JSON.parse(commentsOutput) as {
 			review: { id: string; title: string };
 			latestVersion: { version: number };
-			comments: Array<{ body: string; author: string; filePath: string; lineStart: number; status: string }>;
+			comments: Array<{ body: string; author: string; filePath: string; lineStart: number; lineEnd: number; status: string }>;
 		};
 		expect(payload.review).toMatchObject({ id: reviewId, title: 'comment smoke' });
 		expect(payload.latestVersion.version).toBe(1);
@@ -94,6 +96,7 @@ describe('ltsql-review CLI', () => {
 				author: 'reviewer',
 				filePath: 'case.sql',
 				lineStart: 2,
+				lineEnd: 3,
 				status: 'open'
 			})
 		]);
