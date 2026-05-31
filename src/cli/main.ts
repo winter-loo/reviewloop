@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { createReviewStore } from '../lib/server/storage/db';
 import { getGitRoot } from '../lib/server/git/git';
 import { publishReview } from '../lib/server/reviews/publish';
-import type { ReviewSourceKind } from '../lib/server/storage/types';
+import type { CommentSide, ReviewCommentRecord, ReviewSourceKind } from '../lib/server/storage/types';
 
 function parseArgs(argv: string[]) {
 	const [command, ...rest] = argv;
@@ -38,6 +39,7 @@ function usage() {
 Commands:
   publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title>
   list
+  add-comment --review <id> --file <path> --line <n> --side old|new --body <text> [--author <name>]
   comments --review <id> --json
 `;
 }
@@ -45,6 +47,45 @@ Commands:
 function reviewSourceKind(value: string): ReviewSourceKind {
 	if (value === 'worktree' || value === 'staged') return value;
 	throw new Error(`Unsupported --type '${value}'. Use worktree or staged, or pass --range/--show.`);
+}
+
+function commentSide(value: string | undefined): CommentSide {
+	if (!value) return 'file';
+	if (value === 'old' || value === 'new' || value === 'file') return value;
+	throw new Error(`Unsupported --side '${value}'. Use old, new, or file.`);
+}
+
+function optionalPositiveInt(value: string | undefined, flagName: string) {
+	if (!value) return null;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${flagName} must be a positive integer`);
+	return parsed;
+}
+
+function createCommentFromFlags(flags: Map<string, string | boolean>, reviewId: string, version: number): ReviewCommentRecord {
+	const body = stringFlag(flags, 'body')?.trim();
+	if (!body) throw new Error('--body is required');
+	const filePath = stringFlag(flags, 'file');
+	if (!filePath) throw new Error('--file is required for inline review comments');
+	const lineStart = optionalPositiveInt(stringFlag(flags, 'line'), '--line');
+	if (!lineStart) throw new Error('--line is required for inline review comments');
+	const side = commentSide(stringFlag(flags, 'side') ?? 'new');
+	if (side === 'file') throw new Error('--side must be old or new for inline review comments');
+	const now = new Date().toISOString();
+	return {
+		id: randomUUID(),
+		reviewId,
+		version,
+		filePath,
+		side,
+		lineStart,
+		lineEnd: lineStart,
+		body,
+		author: stringFlag(flags, 'author') ?? process.env.USER ?? 'anonymous',
+		status: 'open',
+		createdAt: now,
+		updatedAt: now
+	};
 }
 
 async function main() {
@@ -102,13 +143,33 @@ async function main() {
 		if (command === 'comments') {
 			const reviewId = stringFlag(flags, 'review');
 			if (!reviewId) throw new Error('--review is required');
+			const review = store.getReview(reviewId);
+			if (!review) throw new Error(`Review not found: ${reviewId}`);
+			const latestVersion = store.getLatestVersion(reviewId);
 			const comments = store.listComments(reviewId);
 			if (flags.has('json')) {
-				console.log(JSON.stringify(comments, null, 2));
+				console.log(JSON.stringify({ review, latestVersion, comments }, null, 2));
 			} else {
 				for (const comment of comments) {
 					console.log(`${comment.id}\t${comment.status}\t${comment.filePath ?? '<general>'}:${comment.lineStart ?? ''}\t${comment.body}`);
 				}
+			}
+			return;
+		}
+
+		if (command === 'add-comment') {
+			const reviewId = stringFlag(flags, 'review');
+			if (!reviewId) throw new Error('--review is required');
+			const review = store.getReview(reviewId);
+			if (!review) throw new Error(`Review not found: ${reviewId}`);
+			const latestVersion = store.getLatestVersion(reviewId);
+			if (!latestVersion) throw new Error(`Review has no version: ${reviewId}`);
+			const comment = createCommentFromFlags(flags, reviewId, latestVersion.version);
+			store.addComment(comment);
+			if (flags.has('json')) {
+				console.log(JSON.stringify({ review, latestVersion, comment }, null, 2));
+			} else {
+				console.log(`Added comment ${comment.id} to ${reviewId}`);
 			}
 			return;
 		}

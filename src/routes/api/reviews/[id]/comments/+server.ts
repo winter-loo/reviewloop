@@ -28,15 +28,21 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		throw error(400, 'Invalid JSON request body');
 	}
 	if (!body.body?.trim()) throw error(400, 'Comment body is required');
+	if (!body.filePath?.trim()) throw error(400, 'filePath is required for inline review comments');
+	if (body.side !== 'old' && body.side !== 'new') throw error(400, 'side must be old or new for inline review comments');
+	const lineStart = Number(body.lineStart);
+	if (!Number.isInteger(lineStart) || lineStart < 1) {
+		throw error(400, 'lineStart must be a positive integer for inline review comments');
+	}
 	const now = new Date().toISOString();
 	const comment = {
 		id: randomUUID(),
 		reviewId: params.id,
 		version: latestVersion.version,
-		filePath: body.filePath ?? null,
-		side: body.side ?? 'file',
-		lineStart: body.lineStart ?? null,
-		lineEnd: body.lineEnd ?? body.lineStart ?? null,
+		filePath: body.filePath.trim(),
+		side: body.side,
+		lineStart,
+		lineEnd: body.lineEnd ?? lineStart,
 		body: body.body.trim(),
 		author: body.author ?? 'anonymous',
 		status: 'open' as const,

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { getFileBadges, summarizeCommitMessage } from '$lib/review/commitUi';
 
 	let { data } = $props();
@@ -31,6 +32,38 @@
 		lineCount: number;
 	};
 
+	type ReviewComment = {
+		id: string;
+		reviewId: string;
+		version: number;
+		filePath: string | null;
+		side: 'old' | 'new' | 'file';
+		lineStart: number | null;
+		lineEnd: number | null;
+		body: string;
+		author: string;
+		status: 'open' | 'resolved';
+		createdAt: string;
+		updatedAt: string;
+	};
+
+	type DiffRow = {
+		index: number;
+		text: string;
+		kind: 'added' | 'deleted' | 'header' | 'context';
+		oldLine: number | null;
+		newLine: number | null;
+		side: 'old' | 'new' | null;
+		lineNumber: number | null;
+		hunkHeader: string | null;
+		commentable: boolean;
+	};
+
+	type DiffDisplayItem =
+		| { type: 'diff'; key: string; row: DiffRow }
+		| { type: 'comment'; key: string; row: DiffRow; comment: ReviewComment }
+		| { type: 'composer'; key: string; row: DiffRow };
+
 	const latestVersion = $derived(data.latestVersion!);
 	const commits = $derived((data.commits ?? []) as ReviewCommit[]);
 	let selectedCommitId = $state('all');
@@ -43,11 +76,12 @@
 	let loadError = $state<string | null>(null);
 	let forceLarge = $state<Record<string, boolean>>({});
 	let reviewed = $state<Record<string, boolean>>({});
-	let scrollTop = $state(0);
-	let viewportHeight = $state(720);
-
-	const rowHeight = 20;
-	const overscan = 40;
+	let comments = $state<ReviewComment[]>([]);
+	let commentAuthor = $state('reviewer');
+	let activeDraftKey = $state<string | null>(null);
+	let commentBody = $state('');
+	let commentError = $state<string | null>(null);
+	let commentSubmitting = $state(false);
 
 	function fileKey(file: ReviewFile) {
 		return file.id ?? file.path;
@@ -86,9 +120,11 @@
 	const selectedKey = $derived(selectedFile ? fileKey(selectedFile) : '');
 	const selectedDiff = $derived(selectedKey ? loadedDiffs[selectedKey] : '');
 	const diffLines = $derived(selectedDiff ? selectedDiff.split('\n') : []);
-	const visibleStart = $derived(Math.max(0, Math.floor(scrollTop / rowHeight) - overscan));
-	const visibleEnd = $derived(Math.min(diffLines.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscan));
-	const visibleLines = $derived(diffLines.slice(visibleStart, visibleEnd));
+	const diffRows = $derived(parseUnifiedDiffRows(diffLines));
+	const selectedFileComments = $derived(
+		comments.filter((comment) => comment.filePath === selectedFile?.path && comment.status === 'open')
+	);
+	const displayItems = $derived(buildDiffDisplayItems(diffRows, selectedFileComments, activeDraftKey));
 
 	function formatBytes(bytes = 0) {
 		if (bytes < 1024) return `${bytes} B`;
@@ -103,10 +139,95 @@
 		return '';
 	}
 
+
+	function parseHunkHeader(line: string) {
+		const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+		if (!match) return null;
+		return { oldLine: Number(match[1]), newLine: Number(match[2]) };
+	}
+
+	function parseUnifiedDiffRows(lines: string[]): DiffRow[] {
+		let oldLine: number | null = null;
+		let newLine: number | null = null;
+		let hunkHeader: string | null = null;
+		return lines.map((line, index) => {
+			const parsedHeader = parseHunkHeader(line);
+			if (parsedHeader) {
+				oldLine = parsedHeader.oldLine;
+				newLine = parsedHeader.newLine;
+				hunkHeader = line;
+				return { index, text: line, kind: 'header', oldLine: null, newLine: null, side: null, lineNumber: null, hunkHeader, commentable: false };
+			}
+
+			if (line.startsWith('+') && !line.startsWith('+++')) {
+				const lineNumber = newLine;
+				if (newLine !== null) newLine += 1;
+				return { index, text: line, kind: 'added', oldLine: null, newLine: lineNumber, side: 'new', lineNumber, hunkHeader, commentable: lineNumber !== null };
+			}
+
+			if (line.startsWith('-') && !line.startsWith('---')) {
+				const lineNumber = oldLine;
+				if (oldLine !== null) oldLine += 1;
+				return { index, text: line, kind: 'deleted', oldLine: lineNumber, newLine: null, side: 'old', lineNumber, hunkHeader, commentable: lineNumber !== null };
+			}
+
+			const rowOldLine = oldLine;
+			const rowNewLine = newLine;
+			if (oldLine !== null) oldLine += 1;
+			if (newLine !== null) newLine += 1;
+			return { index, text: line, kind: diffClass(line) || 'context', oldLine: rowOldLine, newLine: rowNewLine, side: rowNewLine !== null ? 'new' : null, lineNumber: rowNewLine, hunkHeader, commentable: rowNewLine !== null && hunkHeader !== null };
+		});
+	}
+
+	function rowCommentKey(row: DiffRow) {
+		return `${row.side ?? 'file'}:${row.lineNumber ?? row.index}`;
+	}
+
+	function commentsForRow(row: DiffRow, rowComments: ReviewComment[]) {
+		if (!row.commentable || row.lineNumber === null || row.side === null) return [];
+		return rowComments.filter((comment) => comment.side === row.side && comment.lineStart === row.lineNumber);
+	}
+
+	function buildDiffDisplayItems(rows: DiffRow[], rowComments: ReviewComment[], draftKey: string | null): DiffDisplayItem[] {
+		const items: DiffDisplayItem[] = [];
+		for (const row of rows) {
+			items.push({ type: 'diff', key: `diff:${row.index}`, row });
+			for (const comment of commentsForRow(row, rowComments)) {
+				items.push({ type: 'comment', key: `comment:${comment.id}`, row, comment });
+			}
+			if (draftKey === rowCommentKey(row)) {
+				items.push({ type: 'composer', key: `composer:${rowCommentKey(row)}`, row });
+			}
+		}
+		return items;
+	}
+
+	function lineLabel(row: DiffRow, side: 'old' | 'new') {
+		const line = side === 'old' ? row.oldLine : row.newLine;
+		return line === null ? '' : String(line);
+	}
+
+	async function startInlineComment(row: DiffRow) {
+		if (!row.commentable) return;
+		activeDraftKey = rowCommentKey(row);
+		commentBody = '';
+		commentError = null;
+		await tick();
+		// Opening a composer near the bottom of the virtualized diff can place the
+		// Save/Cancel row below the visible scrollport. Bring the full composer into
+		// view so both actions are immediately clickable.
+		document.querySelector('form.inline-comment.composer')?.scrollIntoView({ block: 'nearest' });
+	}
+
+	function cancelInlineComment() {
+		activeDraftKey = null;
+		commentBody = '';
+		commentError = null;
+	}
+
 	async function loadFile(file: ReviewFile, force = false) {
 		selectedFile = file;
 		loadError = null;
-		scrollTop = 0;
 		const key = fileKey(file);
 		if (file.tooLarge && !force && !forceLarge[key]) return;
 		if (loadedDiffs[key]) return;
@@ -142,7 +263,6 @@
 		selectedCommitId = commitId;
 		selectedFile = null;
 		loadError = null;
-		scrollTop = 0;
 	}
 
 	function hasActiveTextSelection() {
@@ -179,11 +299,45 @@
 		}
 	}
 
-	function onDiffScroll(event: Event) {
-		const target = event.currentTarget as HTMLElement;
-		scrollTop = target.scrollTop;
-		viewportHeight = target.clientHeight;
+	async function submitInlineComment(row: DiffRow) {
+		commentError = null;
+		const body = commentBody.trim();
+		if (!selectedFile || !row.commentable || row.side === null || row.lineNumber === null) {
+			commentError = 'Select a concrete diff line before commenting.';
+			return;
+		}
+		if (!body) {
+			commentError = 'Comment body is required.';
+			return;
+		}
+		commentSubmitting = true;
+		try {
+			const response = await fetch(`/api/reviews/${data.review.id}/comments`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					filePath: selectedFile.path,
+					side: row.side,
+					lineStart: row.lineNumber,
+					lineEnd: row.lineNumber,
+					body,
+					author: commentAuthor.trim() || 'reviewer'
+				})
+			});
+			if (!response.ok) throw new Error(await response.text());
+			const payload = (await response.json()) as { comment: ReviewComment };
+			comments = [...comments, payload.comment];
+			cancelInlineComment();
+		} catch (cause) {
+			commentError = cause instanceof Error ? cause.message : 'Unable to add comment';
+		} finally {
+			commentSubmitting = false;
+		}
 	}
+
+	$effect(() => {
+		comments = [...(data.comments as ReviewComment[])];
+	});
 
 	$effect(() => {
 		const selectedStillVisible = selectedFile && filteredFiles.some((file) => fileKey(file) === fileKey(selectedFile!));
@@ -197,7 +351,6 @@
 			} else {
 				selectedFile = null;
 				loadError = null;
-				scrollTop = 0;
 			}
 		}
 	});
@@ -343,15 +496,49 @@
 			{:else if loadingFileId}
 				<p class="loading">Loading file diff…</p>
 			{:else if diffLines.length > 0}
-				<div class="virtual-diff" onscroll={onDiffScroll}>
-					<div style={`height: ${diffLines.length * rowHeight}px; position: relative;`}>
-						<div style={`transform: translateY(${visibleStart * rowHeight}px);`}>
-							{#each visibleLines as line, index}
-								<div class={`diff-line ${diffClass(line)}`} style={`height: ${rowHeight}px;`}>
-									<span class="line-no">{visibleStart + index + 1}</span><code>{line || ' '}</code>
-								</div>
-							{/each}
-						</div>
+				<div class="virtual-diff">
+					<div class="diff-flow">
+						{#each displayItems as item (item.key)}
+							<div class="diff-item">
+								{#if item.type === 'diff'}
+									<div class={`diff-line ${item.row.kind}`} class:commentable={item.row.commentable}>
+										<span class="line-no old-no">{lineLabel(item.row, 'old')}</span>
+										<span class="line-no new-no">{lineLabel(item.row, 'new')}</span>
+										<span class="comment-gutter">
+											{#if item.row.commentable}
+												<button title="Add line comment" aria-label={`Add comment on ${selectedFile?.path}:${item.row.lineNumber}`} onclick={() => startInlineComment(item.row)}>+</button>
+											{/if}
+										</span>
+										<code>{item.row.text || ' '}</code>
+									</div>
+								{:else if item.type === 'comment'}
+									<article class="inline-comment">
+										<div class="comment-meta">
+											<strong>{item.comment.author}</strong>
+											<span>Line {item.comment.lineStart} · {item.comment.side === 'old' ? 'LEFT' : 'RIGHT'}</span>
+											<time datetime={item.comment.createdAt}>{new Date(item.comment.createdAt).toLocaleString()}</time>
+										</div>
+										<p>{item.comment.body}</p>
+									</article>
+								{:else}
+									<form class="inline-comment composer" onsubmit={(event) => { event.preventDefault(); void submitInlineComment(item.row); }}>
+										<div class="comment-meta">
+											<strong>New review comment</strong>
+											<span>Line {item.row.lineNumber} · {item.row.side === 'old' ? 'LEFT' : 'RIGHT'}</span>
+										</div>
+										<div class="composer-fields">
+											<input bind:value={commentAuthor} aria-label="Comment author" placeholder="reviewer" />
+											<textarea bind:value={commentBody} rows="3" placeholder="Add a GitHub-style inline review comment"></textarea>
+										</div>
+										<div class="comment-actions">
+											<button class="primary" type="submit" disabled={commentSubmitting}>{commentSubmitting ? 'Saving…' : 'Add single comment'}</button>
+											<button type="button" onclick={cancelInlineComment}>Cancel</button>
+										</div>
+										{#if commentError}<p class="error compact-error">{commentError}</p>{/if}
+									</form>
+								{/if}
+							</div>
+						{/each}
 					</div>
 				</div>
 			{:else if selectedFile}
@@ -362,21 +549,34 @@
 		</section>
 	</section>
 
-	<section class="comments">
-		<h2>Comments</h2>
-		{#if data.comments.length === 0}
-			<p>No comments yet. Use the comments API for MVP:</p>
-			<pre>POST /api/reviews/{data.review.id}/comments</pre>
+
+	<section class="comments overview-comments">
+		<div class="comments-head">
+			<div>
+				<p class="eyebrow">Review comments</p>
+				<h2>Inline comments</h2>
+			</div>
+			<span class="count-pill">{comments.length}</span>
+		</div>
+		<p class="comment-filter-note">Use the <strong>+</strong> button beside a diff line to add a GitHub-style review comment. Comments are anchored by path, side, and line, and exported by <code>ltsql-review comments --review {data.review.id} --json</code>.</p>
+		{#if comments.length === 0}
+			<p class="empty-comment">No inline comments yet.</p>
 		{:else}
-			{#each data.comments as comment}
-				<article>
-					<strong>{comment.author}</strong>
-					<span>{comment.filePath ?? 'general'}:{comment.lineStart ?? ''}</span>
-					<p>{comment.body}</p>
-				</article>
-			{/each}
+			<div class="comment-list">
+				{#each comments as comment}
+					<article>
+						<div class="comment-meta">
+							<strong>{comment.author}</strong>
+							<span>{comment.filePath ?? 'general'}{comment.lineStart ? `:${comment.lineStart}` : ''} · {comment.side === 'old' ? 'LEFT' : comment.side === 'new' ? 'RIGHT' : 'FILE'}</span>
+							<time datetime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
+						</div>
+						<p>{comment.body}</p>
+					</article>
+				{/each}
+			</div>
 		{/if}
 	</section>
+
 </main>
 
 
@@ -631,13 +831,18 @@
 		padding: 10px 12px;
 		border-bottom: 1px solid #e4eaf3;
 	}
-	input {
+	input,
+	textarea {
 		box-sizing: border-box;
 		width: 100%;
 		border: 1px solid #cbd5e1;
 		border-radius: 8px;
 		padding: 8px 10px;
 		font: inherit;
+	}
+	textarea {
+		resize: vertical;
+		min-height: 96px;
 	}
 	.filters,
 	.diff-actions {
@@ -718,23 +923,60 @@
 		font-size: 12px;
 		line-height: 20px;
 	}
+	.diff-flow {
+		min-width: max-content;
+	}
+	.diff-item {
+		position: relative;
+	}
 	.diff-line {
 		display: grid;
-		grid-template-columns: 64px max-content;
+		grid-template-columns: 54px 54px 34px max-content;
 		white-space: pre;
 		color: #d9e6ff;
+		min-width: max-content;
 	}
 	.diff-line code {
 		padding-right: 24px;
 	}
-	.line-no {
-		position: sticky;
-		left: 0;
+	.line-no,
+	.comment-gutter {
 		background: #111827;
 		color: #94a3b8;
-		padding-right: 10px;
+		padding-right: 8px;
 		text-align: right;
 		user-select: none;
+	}
+	.old-no {
+		position: sticky;
+		left: 0;
+	}
+	.new-no {
+		position: sticky;
+		left: 54px;
+	}
+	.comment-gutter {
+		position: sticky;
+		left: 108px;
+		display: inline-flex;
+		justify-content: center;
+		padding-right: 0;
+	}
+	.comment-gutter button {
+		width: 22px;
+		height: 18px;
+		margin-top: 1px;
+		padding: 0;
+		border-radius: 999px;
+		border-color: #3b82f6;
+		background: #1f6feb;
+		color: #fff;
+		font: 800 12px/16px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		opacity: 0;
+	}
+	.diff-line.commentable:hover .comment-gutter button,
+	.comment-gutter button:focus-visible {
+		opacity: 1;
 	}
 	.added code {
 		color: #86efac;
@@ -762,6 +1004,92 @@
 	.comments {
 		margin-top: 16px;
 		padding: 14px;
+	}
+	.comments-head,
+	.comment-actions,
+	.comment-meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+	.comments h2 {
+		margin: 0;
+	}
+	.inline-comment {
+		position: sticky;
+		left: 142px;
+		box-sizing: border-box;
+		margin-left: 142px;
+		margin-right: 20px;
+		margin-bottom: 6px;
+		width: min(760px, calc(100dvw - 224px));
+		max-width: calc(100dvw - 224px);
+		padding: 8px 10px;
+		border: 1px solid #bfdbfe;
+		border-radius: 8px;
+		background: #f8fbff;
+		color: #111827;
+		font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+		line-height: 1.3;
+	}
+	.inline-comment p {
+		margin: 6px 0 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.inline-comment.composer {
+		display: grid;
+		gap: 8px;
+		background: #eff6ff;
+	}
+	.inline-comment.composer > * {
+		min-width: 0;
+		max-width: 100%;
+	}
+	.composer-fields {
+		display: grid;
+		grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+		gap: 8px;
+	}
+	.composer-fields input,
+	.composer-fields textarea {
+		min-width: 0;
+	}
+	.composer-fields textarea {
+		min-height: 62px;
+		resize: none;
+	}
+	.inline-comment.composer .comment-actions {
+		justify-content: flex-start;
+	}
+	.comment-actions span,
+	.comment-filter-note,
+	.empty-comment {
+		color: #667085;
+		font-size: 0.84rem;
+	}
+	.comment-list {
+		margin-top: 12px;
+	}
+	.comment-meta {
+		justify-content: flex-start;
+		font-size: 0.85rem;
+		color: #667085;
+	}
+	.comment-meta strong {
+		color: #111827;
+	}
+	.comment-meta span {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+		min-width: 0;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+	.compact-error {
+		margin: 0;
+		padding: 10px 12px;
 	}
 	pre:not(.commit-message) {
 		overflow: auto;

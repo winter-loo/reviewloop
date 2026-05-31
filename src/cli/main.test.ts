@@ -40,4 +40,62 @@ describe('ltsql-review CLI', () => {
 		expect(listOutput).toContain(reviewId!);
 		expect(listOutput).toContain('cli smoke');
 	});
+
+	it('adds and exports review comments in agent-friendly JSON', () => {
+		const repo = createRepo();
+		const home = mkdtempSync(path.join(os.tmpdir(), 'ltsql-review-cli-home-'));
+		const env = { ...process.env, LTSQL_REVIEW_HOME: home };
+		const publishOutput = execFileSync(
+			'node',
+			['--import', 'tsx', 'src/cli/main.ts', 'publish', '--repo', repo, '--type', 'worktree', '--title', 'comment smoke'],
+			{ cwd: process.cwd(), env }
+		).toString();
+		const reviewId = /Created review (CR-\d{8}-\d{4})/.exec(publishOutput)?.[1];
+		expect(reviewId).toBeTruthy();
+
+		const addOutput = execFileSync(
+			'node',
+			[
+				'--import',
+				'tsx',
+				'src/cli/main.ts',
+				'add-comment',
+				'--review',
+				reviewId!,
+				'--file',
+				'case.sql',
+				'--line',
+				'2',
+				'--side',
+				'new',
+				'--author',
+				'reviewer',
+				'--body',
+				'Please verify this SQL output.'
+			],
+			{ cwd: process.cwd(), env }
+		).toString();
+		expect(addOutput).toContain('Added comment');
+
+		const commentsOutput = execFileSync('node', ['--import', 'tsx', 'src/cli/main.ts', 'comments', '--review', reviewId!, '--json'], {
+			cwd: process.cwd(),
+			env
+		}).toString();
+		const payload = JSON.parse(commentsOutput) as {
+			review: { id: string; title: string };
+			latestVersion: { version: number };
+			comments: Array<{ body: string; author: string; filePath: string; lineStart: number; status: string }>;
+		};
+		expect(payload.review).toMatchObject({ id: reviewId, title: 'comment smoke' });
+		expect(payload.latestVersion.version).toBe(1);
+		expect(payload.comments).toEqual([
+			expect.objectContaining({
+				body: 'Please verify this SQL output.',
+				author: 'reviewer',
+				filePath: 'case.sql',
+				lineStart: 2,
+				status: 'open'
+			})
+		]);
+	});
 });
