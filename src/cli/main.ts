@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { createReviewStore } from '../lib/server/storage/db';
 import { getGitRoot } from '../lib/server/git/git';
-import { publishReview } from '../lib/server/reviews/publish';
+import { publishDocumentReview, publishReview } from '../lib/server/reviews/publish';
 import type { CommentSide, ReviewCommentRecord, ReviewSourceKind } from '../lib/server/storage/types';
 
 function parseArgs(argv: string[]) {
@@ -38,6 +39,7 @@ function usage() {
 
 Commands:
   publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title>
+  publish-doc --file <markdown.md> --title <title>
   list
   add-comment --review <id> --file <path> --line <n> [--line-end <n>] --side old|new --body <text> [--author <name>]
   comments --review <id> --json
@@ -127,6 +129,24 @@ async function main() {
 					'Hint: worktree review only captures uncommitted changes. For committed LTSQL work, publish a commit range, e.g. --range "refs/remotes/git-svn..HEAD".'
 				);
 			}
+			return;
+		}
+
+		if (command === 'publish-doc') {
+			const file = stringFlag(flags, 'file');
+			if (!file) throw new Error('--file is required');
+			const title = stringFlag(flags, 'title') ?? path.basename(file);
+			const result = publishDocumentReview({
+				filePath: file,
+				title,
+				createdBy: process.env.USER || 'unknown',
+				store,
+				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173'
+			});
+			console.log(`Created review ${result.review.id}`);
+			console.log(`URL: ${result.url}`);
+			console.log(`Document: ${result.document.path}`);
+			console.log(`Lines: ${result.document.lineCount}`);
 			return;
 		}
 

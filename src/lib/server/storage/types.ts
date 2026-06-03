@@ -1,6 +1,6 @@
 export type ReviewStatus = 'draft' | 'in_review' | 'changes_requested' | 'approved' | 'superseded' | 'closed';
 
-export type ReviewSourceKind = 'worktree' | 'staged' | 'show' | 'range';
+export type ReviewSourceKind = 'worktree' | 'staged' | 'show' | 'range' | 'document';
 
 export interface ReviewRecord {
 	id: string;

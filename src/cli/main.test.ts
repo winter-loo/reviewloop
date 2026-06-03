@@ -101,4 +101,55 @@ describe('ltsql-review CLI', () => {
 			})
 		]);
 	});
+
+	it('publishes markdown document reviews and exports line comments in agent-friendly JSON', () => {
+		const docDir = mkdtempSync(path.join(os.tmpdir(), 'ltsql-review-doc-'));
+		const docPath = path.join(docDir, 'design.md');
+		writeFileSync(docPath, '# Design\n\n## Scope\nReview this markdown.\n');
+		const home = mkdtempSync(path.join(os.tmpdir(), 'ltsql-review-cli-home-'));
+		const env = { ...process.env, LTSQL_REVIEW_HOME: home };
+
+		const publishOutput = execFileSync(
+			'node',
+			['--import', 'tsx', 'src/cli/main.ts', 'publish-doc', '--file', docPath, '--title', 'design review'],
+			{ cwd: process.cwd(), env }
+		).toString();
+		expect(publishOutput).toContain('Created review CR-');
+		expect(publishOutput).toContain('Lines: 5');
+		const reviewId = /Created review (CR-\d{8}-\d{4})/.exec(publishOutput)?.[1];
+		expect(reviewId).toBeTruthy();
+
+		execFileSync(
+			'node',
+			[
+				'--import',
+				'tsx',
+				'src/cli/main.ts',
+				'add-comment',
+				'--review',
+				reviewId!,
+				'--file',
+				docPath,
+				'--line',
+				'3',
+				'--side',
+				'new',
+				'--author',
+				'hermes',
+				'--body',
+				'Please expand this section.'
+			],
+			{ cwd: process.cwd(), env }
+		);
+
+		const payload = JSON.parse(
+			execFileSync('node', ['--import', 'tsx', 'src/cli/main.ts', 'comments', '--review', reviewId!, '--json'], {
+				cwd: process.cwd(),
+				env
+			}).toString()
+		) as { review: { sourceKind: string }; latestVersion: { version: number }; comments: Array<{ filePath: string; lineStart: number; body: string }> };
+		expect(payload.review.sourceKind).toBe('document');
+		expect(payload.latestVersion.version).toBe(1);
+		expect(payload.comments[0]).toMatchObject({ filePath: docPath, lineStart: 3, body: 'Please expand this section.' });
+	});
 });

@@ -54,6 +54,23 @@ function normalizeCommitLargeFlags<T extends { files?: Array<{ patchBytes?: numb
 	return { ...commit, files: commit.files?.map(normalizeLargeFlag) ?? [] };
 }
 
+export function getDocumentReviewDetail(reviewId: string) {
+	const store = getReviewStore();
+	const review = store.getReview(reviewId);
+	if (!review || review.sourceKind !== 'document') return null;
+	const latestVersion = store.getLatestVersion(reviewId);
+	if (!latestVersion) return null;
+	const markdown = readTextArtifact(latestVersion.diffPath, 'document markdown');
+	let document = { path: review.sourceRef ?? 'document.md', artifactPath: latestVersion.diffPath, lineCount: markdown.split('\n').length };
+	try {
+		const parsed = readFilesArtifact(latestVersion.filesPath);
+		if (parsed?.document) document = { ...document, ...parsed.document };
+	} catch {
+		// Older document reviews can still render from the markdown artifact alone.
+	}
+	return { review, latestVersion, document, markdown };
+}
+
 export function getReviewDetail(reviewId: string) {
 	const store = getReviewStore();
 	const review = store.getReview(reviewId);

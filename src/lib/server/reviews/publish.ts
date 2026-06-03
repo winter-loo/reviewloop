@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { artifactsDir, reviewArtifactDir } from '../storage/paths';
 import type { ReviewRecord, ReviewSourceKind, ReviewVersionRecord } from '../storage/types';
@@ -92,6 +92,64 @@ async function captureCommitSections(input: PublishReviewInput): Promise<Array<G
 		if (commit) return [{ ...commit, diff: await captureShowDiff(input.repoRoot, input.sourceRef) }];
 	}
 	return [];
+}
+
+export interface PublishDocumentReviewInput {
+	title: string;
+	filePath: string;
+	createdBy: string;
+	store: ReviewStore;
+	baseUrl?: string;
+}
+
+export interface PublishDocumentReviewResult {
+	review: ReviewRecord;
+	version: ReviewVersionRecord;
+	document: { path: string; artifactPath: string; lineCount: number };
+	url: string;
+}
+
+export function publishDocumentReview(input: PublishDocumentReviewInput): PublishDocumentReviewResult {
+	const now = timestamp();
+	const id = reviewIdFromDate();
+	const sourcePath = path.resolve(input.filePath);
+	const markdown = readFileSync(sourcePath, 'utf8');
+	const artifactDir = reviewArtifactDir(id, 1).replace(artifactsDir(), path.join(input.store.home, 'artifacts'));
+	mkdirSync(artifactDir, { recursive: true });
+
+	const markdownPath = path.join(artifactDir, 'document.md');
+	const filesPath = path.join(artifactDir, 'document.json');
+	const metadataPath = path.join(artifactDir, 'metadata.json');
+	const review: ReviewRecord = {
+		id,
+		title: input.title,
+		repoRoot: path.dirname(sourcePath),
+		sourceKind: 'document',
+		sourceRef: sourcePath,
+		status: 'in_review',
+		createdBy: input.createdBy,
+		createdAt: now,
+		updatedAt: now
+	};
+	const version: ReviewVersionRecord = {
+		id: `${id}-v1`,
+		reviewId: id,
+		version: 1,
+		baseCommit: null,
+		headCommit: null,
+		diffPath: markdownPath,
+		filesPath,
+		createdAt: now
+	};
+	const lineCount = markdown.split('\n').length;
+	const document = { path: sourcePath, artifactPath: markdownPath, lineCount };
+	writeFileSync(markdownPath, markdown, 'utf8');
+	writeFileSync(filesPath, JSON.stringify({ document }, null, 2), 'utf8');
+	writeFileSync(metadataPath, JSON.stringify({ review, version, document }, null, 2), 'utf8');
+	input.store.insertReview(review);
+	input.store.insertVersion(version);
+	const baseUrl = input.baseUrl ?? 'http://localhost:5173';
+	return { review, version, document, url: `${baseUrl}/document-reviews/${id}` };
 }
 
 export async function publishReview(input: PublishReviewInput): Promise<PublishReviewResult> {

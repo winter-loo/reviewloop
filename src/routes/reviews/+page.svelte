@@ -21,8 +21,9 @@
 	{:else}
 		<ul class="reviews">
 			{#each data.reviews as review}
+				{@const href = review.sourceKind === 'document' ? `/document-reviews/${review.id}` : `/reviews/${review.id}`}
 				<li>
-					<a href={`/reviews/${review.id}`}>
+					<a href={href}>
 						<strong>{review.title}</strong>
 						<span>{review.id} · {review.status} · {review.sourceKind}{review.sourceRef ? ` ${review.sourceRef}` : ''}</span>
 						<code>{review.repoRoot}</code>
