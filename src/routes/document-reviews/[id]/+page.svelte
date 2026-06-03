@@ -16,10 +16,11 @@
 		updatedAt: string;
 	};
 
-	type MarkdownLine = {
-		number: number;
-		text: string;
-		kind: 'heading1' | 'heading2' | 'heading3' | 'list' | 'quote' | 'code' | 'table' | 'blank' | 'paragraph';
+	type RenderedMarkdownBlock = {
+		id: string;
+		lineStart: number;
+		lineEnd: number;
+		html: string;
 	};
 
 	let comments = $state<ReviewComment[]>([]);
@@ -30,26 +31,12 @@
 	let commentSubmitting = $state(false);
 
 	const markdownPath = $derived(data.document.path as string);
-	const markdownLines = $derived(parseMarkdownLines(data.markdown as string));
+	const renderedBlocks = $derived((data.renderedBlocks as RenderedMarkdownBlock[]) ?? []);
+	const lineCount = $derived((data.document.lineCount as number) ?? 0);
 	const openComments = $derived(comments.filter((comment) => comment.status === 'open'));
 
-	function parseMarkdownLines(markdown: string): MarkdownLine[] {
-		let inFence = false;
-		return markdown.split('\n').map((line, index) => {
-			if (/^```/.test(line.trim())) {
-				inFence = !inFence;
-				return { number: index + 1, text: line, kind: 'code' };
-			}
-			if (inFence) return { number: index + 1, text: line, kind: 'code' };
-			if (!line.trim()) return { number: index + 1, text: line, kind: 'blank' };
-			if (/^#\s+/.test(line)) return { number: index + 1, text: line.replace(/^#\s+/, ''), kind: 'heading1' };
-			if (/^##\s+/.test(line)) return { number: index + 1, text: line.replace(/^##\s+/, ''), kind: 'heading2' };
-			if (/^###\s+/.test(line)) return { number: index + 1, text: line.replace(/^###\s+/, ''), kind: 'heading3' };
-			if (/^>\s?/.test(line)) return { number: index + 1, text: line.replace(/^>\s?/, ''), kind: 'quote' };
-			if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) return { number: index + 1, text: line, kind: 'list' };
-			if (line.includes('|')) return { number: index + 1, text: line, kind: 'table' };
-			return { number: index + 1, text: line, kind: 'paragraph' };
-		});
+	function lineRangeLabel(block: RenderedMarkdownBlock) {
+		return block.lineStart === block.lineEnd ? String(block.lineStart) : `${block.lineStart}-${block.lineEnd}`;
 	}
 
 	function commentsForLine(line: number) {
@@ -116,7 +103,7 @@
 		<h1>{data.review.title}</h1>
 		<div class="meta">
 			<span>v{data.latestVersion.version}</span>
-			<span>{markdownLines.length} lines</span>
+			<span>{lineCount} lines</span>
 			<span>{openComments.length} open comments</span>
 		</div>
 		<code>{markdownPath}</code>
@@ -125,23 +112,23 @@
 
 	<section class="review-layout">
 		<article class="markdown-card" aria-label="Markdown design document">
-			{#each markdownLines as line}
-				<section class="md-row" class:active={activeLine === line.number}>
-					<button class="add-comment" title={`Comment on line ${line.number}`} onclick={() => startComment(line.number)}>+</button>
-					<a class="line-number" href={`#L${line.number}`} id={`L${line.number}`}>{line.number}</a>
-					<div class="md-content {line.kind}">{line.text || ' '}</div>
+			{#each renderedBlocks as block}
+				<section class="md-block" class:active={activeLine === block.lineStart}>
+					<button class="add-comment" title={`Comment on line ${block.lineStart}`} onclick={() => startComment(block.lineStart)}>+</button>
+					<a class="line-number" href={`#${block.id}`} id={block.id}>{lineRangeLabel(block)}</a>
+					<div class="md-content">{@html block.html}</div>
 				</section>
-				{#each commentsForLine(line.number) as comment}
+				{#each commentsForLine(block.lineStart) as comment}
 					<section class="comment-thread">
 						<strong>{comment.author}</strong>
 						<span>{new Date(comment.createdAt).toLocaleString()}</span>
 						<p>{comment.body}</p>
 					</section>
 				{/each}
-				{#if activeLine === line.number}
-					<form class="comment-composer" onsubmit={(event) => { event.preventDefault(); void submitComment(line.number); }}>
+				{#if activeLine === block.lineStart}
+					<form class="comment-composer" onsubmit={(event) => { event.preventDefault(); void submitComment(block.lineStart); }}>
 						<label>Author <input bind:value={commentAuthor} /></label>
-						<label>Comment on line {line.number}<textarea bind:value={commentBody} rows="4" placeholder="Add a review comment that Hermes can read via comments --json"></textarea></label>
+						<label>Comment on line {block.lineStart}<textarea bind:value={commentBody} rows="4" placeholder="Add a review comment that Hermes can read via comments --json"></textarea></label>
 						{#if commentError}<p class="error">{commentError}</p>{/if}
 						<div class="composer-actions">
 							<button type="submit" disabled={commentSubmitting}>{commentSubmitting ? 'Saving…' : 'Save comment'}</button>
@@ -245,15 +232,15 @@
 		padding: 16px 0;
 		overflow: hidden;
 	}
-	.md-row {
+	.md-block {
 		display: grid;
 		grid-template-columns: 36px 64px minmax(0, 1fr);
 		gap: 8px;
 		align-items: start;
-		padding: 2px 20px;
+		padding: 4px 20px;
 	}
-	.md-row:hover,
-	.md-row.active {
+	.md-block:hover,
+	.md-block.active {
 		background: #f1f5f9;
 	}
 	.add-comment {
@@ -267,8 +254,8 @@
 		cursor: pointer;
 		opacity: 0.35;
 	}
-	.md-row:hover .add-comment,
-	.md-row.active .add-comment {
+	.md-block:hover .add-comment,
+	.md-block.active .add-comment {
 		opacity: 1;
 	}
 	.line-number {
@@ -280,45 +267,91 @@
 		text-decoration: none;
 	}
 	.md-content {
-		min-height: 1.45em;
-		white-space: pre-wrap;
+		min-width: 0;
 		word-break: break-word;
 		font-size: 1rem;
-		line-height: 1.55;
+		line-height: 1.65;
 	}
-	.heading1 {
-		font-size: 1.8rem;
-		font-weight: 850;
+	.md-content :global(*) {
+		box-sizing: border-box;
+	}
+	.md-content :global(h1),
+	.md-content :global(h2),
+	.md-content :global(h3),
+	.md-content :global(h4) {
+		margin: 1.1em 0 0.45em;
 		line-height: 1.25;
-		padding: 18px 0 8px;
-	}
-	.heading2 {
-		font-size: 1.45rem;
 		font-weight: 800;
-		padding: 16px 0 6px;
 	}
-	.heading3 {
-		font-size: 1.2rem;
-		font-weight: 760;
-		padding: 12px 0 4px;
+	.md-content :global(h1) {
+		font-size: 2rem;
+		padding-bottom: 0.25em;
+		border-bottom: 1px solid #e2e8f0;
 	}
-	.list {
-		padding-left: 16px;
+	.md-content :global(h2) {
+		font-size: 1.55rem;
+		padding-bottom: 0.2em;
+		border-bottom: 1px solid #eef2f7;
 	}
-	.quote {
-		padding-left: 14px;
+	.md-content :global(h3) {
+		font-size: 1.25rem;
+	}
+	.md-content :global(p),
+	.md-content :global(ul),
+	.md-content :global(ol),
+	.md-content :global(blockquote),
+	.md-content :global(pre),
+	.md-content :global(table) {
+		margin: 0.65em 0;
+	}
+	.md-content :global(ul),
+	.md-content :global(ol) {
+		padding-left: 1.6rem;
+	}
+	.md-content :global(li + li) {
+		margin-top: 0.25rem;
+	}
+	.md-content :global(blockquote) {
+		padding: 0.3rem 0 0.3rem 1rem;
 		border-left: 4px solid #bfdbfe;
 		color: #475569;
 	}
-	.code {
-		font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-		font-size: 0.92rem;
+	.md-content :global(pre) {
+		overflow-x: auto;
+		padding: 14px 16px;
+		border-radius: 12px;
 		background: #0f172a;
 		color: #e2e8f0;
-		padding: 2px 8px;
 	}
-	.table {
+	.md-content :global(code) {
 		font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+		font-size: 0.92em;
+	}
+	.md-content :global(:not(pre) > code) {
+		padding: 0.12rem 0.32rem;
+		border-radius: 6px;
+		background: #e2e8f0;
+		color: #0f172a;
+	}
+	.md-content :global(table) {
+		width: 100%;
+		border-collapse: collapse;
+		display: block;
+		overflow-x: auto;
+	}
+	.md-content :global(th),
+	.md-content :global(td) {
+		padding: 8px 10px;
+		border: 1px solid #cbd5e1;
+		vertical-align: top;
+	}
+	.md-content :global(th) {
+		background: #f1f5f9;
+		font-weight: 800;
+	}
+	.md-content :global(a) {
+		color: #2563eb;
+		font-weight: 700;
 	}
 	.comment-thread,
 	.comment-composer {
