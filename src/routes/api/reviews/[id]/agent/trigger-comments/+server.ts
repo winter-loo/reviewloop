@@ -1,0 +1,137 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { json, type RequestHandler } from '@sveltejs/kit';
+import { getReviewDetail } from '$lib/server/storage/queries';
+import { getReviewStore } from '$lib/server/storage/store';
+import type { ReviewCommentRecord } from '$lib/server/storage/types';
+
+type DiscordNotificationTarget = {
+	platform: 'discord';
+	channelId: string;
+	threadId?: string;
+	executorMention?: string;
+};
+
+const MAX_MESSAGE_CHARS = 1800;
+
+function sanitizeOutput(text: string) {
+	return text.replace(/(api[_-]?key|token|secret|password)=\S+/gi, '$1=[REDACTED]').slice(0, 8000);
+}
+
+function readMetadataTarget(filesPath: string): DiscordNotificationTarget | null {
+	const metadataPath = path.join(path.dirname(filesPath), 'metadata.json');
+	if (!existsSync(metadataPath)) return null;
+	const metadata = JSON.parse(readFileSync(metadataPath, 'utf8')) as { notificationTarget?: DiscordNotificationTarget | null };
+	const target = metadata.notificationTarget;
+	if (target?.platform !== 'discord' || !target.channelId) return null;
+	return target;
+}
+
+function envTarget(): DiscordNotificationTarget | null {
+	const channelId = process.env.LTSQL_REVIEW_DISCORD_CHANNEL_ID;
+	const threadId = process.env.LTSQL_REVIEW_DISCORD_THREAD_ID;
+	if (!channelId && !threadId) return null;
+	return {
+		platform: 'discord',
+		channelId: channelId ?? threadId!,
+		threadId,
+		executorMention: process.env.LTSQL_REVIEW_EXECUTOR_MENTION
+	};
+}
+
+function formatComment(comment: ReviewCommentRecord, index: number) {
+	const lineEnd = comment.lineEnd ?? comment.lineStart;
+	const range = comment.lineStart ? `${comment.lineStart}${lineEnd && lineEnd !== comment.lineStart ? `-${lineEnd}` : ''}` : '-';
+	return [
+		`#${index + 1} ${comment.filePath ?? 'general'}:${range} ${comment.side} by ${comment.author}`,
+		comment.body
+	].join('\n');
+}
+
+function buildDiscordMessage(reviewId: string, reviewUrl: string, comments: ReviewCommentRecord[], target: DiscordNotificationTarget) {
+	const mention = target.executorMention ? `${target.executorMention} ` : '';
+	const header = `${mention}请处理 LTSQL review 的新增/open comments。\nReview: ${reviewId}\nURL: ${reviewUrl}\nOpen comments: ${comments.length}`;
+	const details = comments.map(formatComment).join('\n\n');
+	const full = `${header}\n\n${details}`;
+	if (full.length <= MAX_MESSAGE_CHARS) return full;
+	return `${full.slice(0, MAX_MESSAGE_CHARS - 120)}\n\n... comments text truncated in Discord message; full structured comments are included in the gateway payload.`;
+}
+
+async function notifyGateway(payload: unknown) {
+	const gatewayUrl = process.env.LTSQL_REVIEW_HERMES_GATEWAY_NOTIFY_URL;
+	if (!gatewayUrl) throw new Error('LTSQL_REVIEW_HERMES_GATEWAY_NOTIFY_URL is not configured');
+	const headers: Record<string, string> = { 'content-type': 'application/json' };
+	if (process.env.LTSQL_REVIEW_HERMES_GATEWAY_TOKEN) {
+		headers.authorization = `Bearer ${process.env.LTSQL_REVIEW_HERMES_GATEWAY_TOKEN}`;
+	}
+	const response = await fetch(gatewayUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
+	const text = sanitizeOutput(await response.text());
+	if (!response.ok) throw new Error(text || `gateway returned HTTP ${response.status}`);
+	return text;
+}
+
+export const POST: RequestHandler = async ({ params }) => {
+	const reviewId = params.id ?? '';
+	if (!reviewId) return json({ error: 'Review id is required' }, { status: 400 });
+	const detail = getReviewDetail(reviewId);
+	if (!detail?.review || !detail.latestVersion) return json({ error: 'Review not found' }, { status: 404 });
+
+	const comments = getReviewStore().listComments(reviewId).filter((comment) => comment.status === 'open');
+	if (comments.length === 0) {
+		return json({ message: 'No open comments to notify.', newCommentCount: 0 });
+	}
+
+	let target: DiscordNotificationTarget | null = null;
+	try {
+		target = readMetadataTarget(detail.latestVersion.filesPath) ?? envTarget();
+	} catch (cause) {
+		return json(
+			{ error: 'Unable to read Discord target', message: cause instanceof Error ? sanitizeOutput(cause.message) : 'Invalid review metadata' },
+			{ status: 500 }
+		);
+	}
+	if (!target) {
+		return json({ error: 'No Discord thread is linked to this review', message: 'Publish the review with --discord-channel/--discord-thread or configure LTSQL_REVIEW_DISCORD_CHANNEL_ID/LTSQL_REVIEW_DISCORD_THREAD_ID.' }, { status: 409 });
+	}
+
+	const reviewUrl = process.env.LTSQL_REVIEW_PUBLIC_URL
+		? `${process.env.LTSQL_REVIEW_PUBLIC_URL.replace(/\/$/, '')}/reviews/${reviewId}`
+		: `/reviews/${reviewId}`;
+	const message = buildDiscordMessage(reviewId, reviewUrl, comments, target);
+	const payload = {
+		type: 'ltsql_review.open_comments',
+		target,
+		message,
+		review: {
+			id: detail.review.id,
+			title: detail.review.title,
+			url: reviewUrl,
+			version: detail.latestVersion.version,
+			repoRoot: detail.review.repoRoot,
+			sourceKind: detail.review.sourceKind,
+			sourceRef: detail.review.sourceRef
+		},
+		comments: comments.map((comment) => ({
+			id: comment.id,
+			filePath: comment.filePath,
+			side: comment.side,
+			lineStart: comment.lineStart,
+			lineEnd: comment.lineEnd,
+			body: comment.body,
+			author: comment.author,
+			status: comment.status,
+			createdAt: comment.createdAt,
+			updatedAt: comment.updatedAt
+		}))
+	};
+
+	try {
+		const gatewayOutput = await notifyGateway(payload);
+		return json({ message: `Notified Discord executor about ${comments.length} open comment(s).`, newCommentCount: comments.length, target, gatewayOutput });
+	} catch (cause) {
+		return json(
+			{ error: 'Gateway notification failed', message: cause instanceof Error ? sanitizeOutput(cause.message) : 'Unable to notify Hermes gateway' },
+			{ status: 502 }
+		);
+	}
+};

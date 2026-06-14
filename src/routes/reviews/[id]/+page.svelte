@@ -57,6 +57,7 @@
 		lineNumber: number | null;
 		hunkHeader: string | null;
 		commentable: boolean;
+		hunkIndex: number | null;
 	};
 
 	type CommentAnchor = {
@@ -75,6 +76,7 @@
 	const latestVersion = $derived(data.latestVersion!);
 	const commits = $derived((data.commits ?? []) as ReviewCommit[]);
 	let selectedCommitId = $state('all');
+	let commitsCollapsed = $state(false);
 	let search = $state('');
 	let filter = $state<'important' | 'code' | 'tests' | 'generated' | 'large' | 'all'>('important');
 	const filterOptions = ['important', 'code', 'tests', 'generated', 'large', 'all'] as const;
@@ -93,6 +95,11 @@
 	let commentBody = $state('');
 	let commentError = $state<string | null>(null);
 	let commentSubmitting = $state(false);
+	let renderedRowLimit = $state(900);
+	let activeHunkIndex = $state(0);
+	let agentTriggering = $state(false);
+	let agentTriggerMessage = $state<string | null>(null);
+	let agentTriggerError = $state<string | null>(null);
 
 	function fileKey(file: ReviewFile) {
 		return file.id ?? file.path;
@@ -139,11 +146,96 @@
 		dragStartAnchor && dragCurrentAnchor ? normalizedRangeAnchor(dragStartAnchor, dragCurrentAnchor) : dragStartAnchor
 	);
 	const displayItems = $derived(buildDiffDisplayItems(diffRows, selectedFileComments, activeDraftAnchor));
+	const hunkRows = $derived(diffRows.filter((row) => row.kind === 'header' && row.hunkHeader));
+	const visibleDisplayItems = $derived(displayItems.filter((item) => item.type !== 'diff' || item.row.index < renderedRowLimit));
+	const hiddenDiffRows = $derived(Math.max(0, diffRows.length - renderedRowLimit));
+	const commitComparison = $derived(selectedCommit ? buildCommitComparison(selectedCommit) : null);
 
 	function formatBytes(bytes = 0) {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+	}
+
+
+	function buildCommitComparison(commit: ReviewCommit) {
+		const index = commits.findIndex((entry) => entry.id === commit.id);
+		const previous = index > 0 ? commits[index - 1] : null;
+		const next = index >= 0 && index < commits.length - 1 ? commits[index + 1] : null;
+		const touchedBy = new Map<string, number>();
+		for (const entry of commits) {
+			for (const file of entry.files) touchedBy.set(file.path, (touchedBy.get(file.path) ?? 0) + 1);
+		}
+		const sharedFiles = commit.files.filter((file) => (touchedBy.get(file.path) ?? 0) > 1);
+		return { position: index + 1, previous, next, uniqueFiles: commit.files.length - sharedFiles.length, sharedFiles, sharedPreview: sharedFiles.slice(0, 5) };
+	}
+
+	async function ensureRowRendered(rowIndex: number) {
+		if (rowIndex >= renderedRowLimit) {
+			renderedRowLimit = Math.min(diffRows.length, rowIndex + 350);
+			await tick();
+		}
+	}
+
+	async function scrollToHunk(delta: number) {
+		if (hunkRows.length === 0) return;
+		const nextIndex = Math.max(0, Math.min(hunkRows.length - 1, activeHunkIndex + delta));
+		activeHunkIndex = nextIndex;
+		const row = hunkRows[nextIndex];
+		await ensureRowRendered(row.index);
+		document.querySelector(`[data-hunk-index="${nextIndex}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+	}
+
+	function resetDiffViewport() {
+		renderedRowLimit = 900;
+		activeHunkIndex = 0;
+		activeDraftAnchor = null;
+		resetDragSelection();
+	}
+
+	function commentHash(comment: ReviewComment) {
+		return `comment-${comment.id}`;
+	}
+
+	function commentShareHref(comment: ReviewComment) {
+		return `#${commentHash(comment)}`;
+	}
+
+	async function copyCommentLink(comment: ReviewComment) {
+		await navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}${commentShareHref(comment)}`);
+	}
+
+	async function openComment(comment: ReviewComment) {
+		if (!comment.filePath) return;
+		const candidates = selectedCommit?.files ?? (data.files as ReviewFile[]);
+		let file = candidates.find((entry) => entry.path === comment.filePath);
+		if (!file && selectedCommit) {
+			selectCommit('all');
+			await tick();
+			file = (data.files as ReviewFile[]).find((entry) => entry.path === comment.filePath);
+		}
+		if (file) {
+			await loadFile(file, true);
+			await tick();
+		}
+		location.hash = commentHash(comment);
+		document.getElementById(commentHash(comment))?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+	}
+
+	async function triggerHermesAgent() {
+		agentTriggering = true;
+		agentTriggerMessage = null;
+		agentTriggerError = null;
+		try {
+			const response = await fetch(`/api/reviews/${data.review.id}/agent/trigger-comments`, { method: 'POST' });
+			const payload = await response.json();
+			if (!response.ok) throw new Error(payload.message ?? payload.error ?? 'Unable to notify the executor bot');
+			agentTriggerMessage = payload.message ?? `Notified the executor bot about ${payload.newCommentCount ?? 0} open comments.`;
+		} catch (cause) {
+			agentTriggerError = cause instanceof Error ? cause.message : 'Unable to notify the executor bot';
+		} finally {
+			agentTriggering = false;
+		}
 	}
 
 	function diffClass(line: string) {
@@ -164,32 +256,36 @@
 		let oldLine: number | null = null;
 		let newLine: number | null = null;
 		let hunkHeader: string | null = null;
+		let currentHunkIndex: number | null = null;
+		let nextHunkIndex = 0;
 		return lines.map((line, index) => {
 			const parsedHeader = parseHunkHeader(line);
 			if (parsedHeader) {
 				oldLine = parsedHeader.oldLine;
 				newLine = parsedHeader.newLine;
 				hunkHeader = line;
-				return { index, text: line, kind: 'header', oldLine: null, newLine: null, side: null, lineNumber: null, hunkHeader, commentable: false };
+				currentHunkIndex = nextHunkIndex;
+				nextHunkIndex += 1;
+				return { index, text: line, kind: 'header', oldLine: null, newLine: null, side: null, lineNumber: null, hunkHeader, commentable: false, hunkIndex: currentHunkIndex };
 			}
 
 			if (line.startsWith('+') && !line.startsWith('+++')) {
 				const lineNumber = newLine;
 				if (newLine !== null) newLine += 1;
-				return { index, text: line, kind: 'added', oldLine: null, newLine: lineNumber, side: 'new', lineNumber, hunkHeader, commentable: lineNumber !== null };
+				return { index, text: line, kind: 'added', oldLine: null, newLine: lineNumber, side: 'new', lineNumber, hunkHeader, commentable: lineNumber !== null, hunkIndex: currentHunkIndex };
 			}
 
 			if (line.startsWith('-') && !line.startsWith('---')) {
 				const lineNumber = oldLine;
 				if (oldLine !== null) oldLine += 1;
-				return { index, text: line, kind: 'deleted', oldLine: lineNumber, newLine: null, side: 'old', lineNumber, hunkHeader, commentable: lineNumber !== null };
+				return { index, text: line, kind: 'deleted', oldLine: lineNumber, newLine: null, side: 'old', lineNumber, hunkHeader, commentable: lineNumber !== null, hunkIndex: currentHunkIndex };
 			}
 
 			const rowOldLine = oldLine;
 			const rowNewLine = newLine;
 			if (oldLine !== null) oldLine += 1;
 			if (newLine !== null) newLine += 1;
-			return { index, text: line, kind: diffClass(line) || 'context', oldLine: rowOldLine, newLine: rowNewLine, side: rowNewLine !== null ? 'new' : null, lineNumber: rowNewLine, hunkHeader, commentable: rowNewLine !== null && hunkHeader !== null };
+			return { index, text: line, kind: diffClass(line) || 'context', oldLine: rowOldLine, newLine: rowNewLine, side: rowNewLine !== null ? 'new' : null, lineNumber: rowNewLine, hunkHeader, commentable: rowNewLine !== null && hunkHeader !== null, hunkIndex: currentHunkIndex };
 		});
 	}
 
@@ -342,6 +438,7 @@
 	async function loadFile(file: ReviewFile, force = false) {
 		selectedFile = file;
 		loadError = null;
+		resetDiffViewport();
 		const key = fileKey(file);
 		if (file.tooLarge && !force && !forceLarge[key]) return;
 		if (loadedDiffs[key]) return;
@@ -377,6 +474,7 @@
 		selectedCommitId = commitId;
 		selectedFile = null;
 		loadError = null;
+		resetDiffViewport();
 	}
 
 	function hasActiveTextSelection() {
@@ -454,6 +552,14 @@
 	});
 
 	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const id = window.location.hash.replace(/^#comment-/, '');
+		if (!id) return;
+		const comment = comments.find((entry) => entry.id === id);
+		if (comment) void openComment(comment);
+	});
+
+	$effect(() => {
 		const selectedStillVisible = selectedFile && filteredFiles.some((file) => fileKey(file) === fileKey(selectedFile!));
 		if (!selectedStillVisible) {
 			const nextFile = filteredFiles[0] ?? null;
@@ -502,58 +608,87 @@
 		<span class="shortcut-hint">Commit navigation: <kbd>j</kbd>/<kbd>k</kbd></span>
 	</section>
 
-	<section class="review-workspace" class:without-commits={commits.length === 0}>
+	<section
+		class="review-workspace"
+		class:without-commits={commits.length === 0}
+		class:commits-collapsed={commits.length > 0 && commitsCollapsed}
+		style:--review-columns={commitsCollapsed ? '58px minmax(320px, 480px) minmax(620px, 1fr)' : undefined}
+	>
 		{#if commits.length > 0}
-			<aside class="commit-rail" aria-label="Commit navigation">
-				<div class="pane-head compact">
-					<div>
-						<p class="eyebrow">Commit range</p>
-						<h2>{commits.length} commits</h2>
-					</div>
-					<span class="keyboard-pill">j/k</span>
+			<aside class="commit-rail" class:rail-collapsed={commitsCollapsed} aria-label="Commit navigation">
+				<div class="pane-head compact commit-rail-head">
+					{#if !commitsCollapsed}
+						<div>
+							<p class="eyebrow">Commit range</p>
+							<h2>{commits.length} commits</h2>
+						</div>
+						<div class="commit-head-actions">
+							<span class="keyboard-pill">j/k</span>
+							<button class="panel-toggle" type="button" aria-label="Collapse commit range panel" title="Collapse commit range panel" onclick={() => (commitsCollapsed = true)}>‹</button>
+						</div>
+					{:else}
+						<button class="panel-toggle expand" type="button" aria-label="Expand commit range panel" title="Expand commit range panel" onclick={() => (commitsCollapsed = false)}>›</button>
+						<span class="collapsed-count" title={`${commits.length} commits`}>{commits.length}</span>
+					{/if}
 				</div>
 
-				<button class="commit-row all-row" class:active={selectedCommitId === 'all'} onclick={() => selectCommitFromClick('all')} onkeydown={onCommitKeydown}>
-					<span class="commit-dot">∑</span>
-					<span class="commit-main">
-						<strong>All commits</strong>
-						<small>{data.files.length} files · +{data.summary.additions} -{data.summary.deletions}</small>
-					</span>
-				</button>
+				{#if !commitsCollapsed}
+					<button class="commit-row all-row" class:active={selectedCommitId === 'all'} onclick={() => selectCommitFromClick('all')} onkeydown={onCommitKeydown}>
+						<span class="commit-dot">∑</span>
+						<span class="commit-main">
+							<strong>Merged local commits</strong>
+							<small>{data.files.length} files · +{data.summary.additions} -{data.summary.deletions} · all commits combined</small>
+						</span>
+					</button>
 
-				<div class="commit-list">
-					{#each commits as commit, index}
-						{@const message = summarizeCommitMessage(commit.message, 76, commit.subject)}
-						{@const activeCommit = selectedCommitId === commit.id}
-						{@const doneFiles = commitReviewedCount(commit)}
-						<button class="commit-row" class:active={activeCommit} onclick={() => selectCommitFromClick(commit.id)} onkeydown={onCommitKeydown}>
-							<span class="commit-dot">{doneFiles === commit.files.length ? '✓' : index + 1}</span>
-							<span class="commit-main">
-								<span class="commit-subject">{message.preview}</span>
-								<span class="commit-facts">
-									<code>{commit.shortSha}</code>
-									<span>{commit.files.length} files</span>
-									<span class="plus">+{commit.additions}</span>
-									<span class="minus">-{commit.deletions}</span>
+					<div class="commit-list">
+						{#each commits as commit, index}
+							{@const message = summarizeCommitMessage(commit.message, 76, commit.subject)}
+							{@const activeCommit = selectedCommitId === commit.id}
+							{@const doneFiles = commitReviewedCount(commit)}
+							<button class="commit-row" class:active={activeCommit} onclick={() => selectCommitFromClick(commit.id)} onkeydown={onCommitKeydown}>
+								<span class="commit-dot">{doneFiles === commit.files.length ? '✓' : index + 1}</span>
+								<span class="commit-main">
+									<span class="commit-subject">{message.preview}</span>
+									<span class="commit-facts">
+										<code>{commit.shortSha}</code>
+										<span>{commit.files.length} files</span>
+										<span class="plus">+{commit.additions}</span>
+										<span class="minus">-{commit.deletions}</span>
+									</span>
+									{#if activeCommit && selectedCommitMessage}
+										<pre class="commit-message">{selectedCommitMessage.full}</pre>
+									{/if}
 								</span>
-								{#if activeCommit && selectedCommitMessage}
-									<pre class="commit-message">{selectedCommitMessage.full}</pre>
-								{/if}
-							</span>
-						</button>
-					{/each}
-				</div>
+							</button>
+						{/each}
+					</div>
+				{/if}
 			</aside>
 		{/if}
 
 		<section class="file-pane">
 			<div class="pane-head">
 				<div>
-					<p class="eyebrow">{selectedCommit ? 'Selected commit' : 'Whole review'}</p>
-					<h2>{selectedCommit ? 'Files in selected commit' : 'Files'}</h2>
+					<p class="eyebrow">{selectedCommit ? 'Selected commit' : 'Combined all local commits patch'}</p>
+					<h2>{selectedCommit ? 'Files in selected commit' : 'All changes'}</h2>
 				</div>
 				<span class="count-pill">{filteredFiles.length}/{commitFiles.length}</span>
 			</div>
+
+			{#if commitComparison}
+				<div class="commit-compare-card">
+					<strong>Commit layer {commitComparison.position}/{commits.length}</strong>
+					<span>{commitComparison.uniqueFiles} unique files · {commitComparison.sharedFiles.length} files also touched by other commits</span>
+					<div class="compare-actions">
+						<button disabled={!commitComparison.previous} onclick={() => commitComparison.previous && selectCommit(commitComparison.previous.id)}>Previous layer</button>
+						<button disabled={!commitComparison.next} onclick={() => commitComparison.next && selectCommit(commitComparison.next.id)}>Next layer</button>
+					</div>
+					{#if commitComparison.sharedPreview.length > 0}
+						<p>Shared hot files: {commitComparison.sharedPreview.map((file) => file.path).join(' · ')}</p>
+					{/if}
+				</div>
+			{/if}
 
 			<div class="file-toolbar">
 				<input bind:value={search} placeholder="Search path" aria-label="Search files" />
@@ -577,6 +712,7 @@
 							</span>
 							<span class="badges">
 								{#each getFileBadges(file) as badge}<em>{badge}</em>{/each}
+								{#if commitComparison?.sharedFiles.some((shared) => shared.path === file.path)}<em class="shared-badge">multi-commit</em>{/if}
 								{#if reviewed[fileKey(file)]}<em class="reviewed-badge">reviewed</em>{/if}
 							</span>
 						</button>
@@ -594,6 +730,9 @@
 				</div>
 				{#if selectedFile}
 					<div class="diff-actions">
+						<button disabled={hunkRows.length === 0 || activeHunkIndex === 0} onclick={() => void scrollToHunk(-1)}>Previous hunk</button>
+						<button disabled={hunkRows.length === 0 || activeHunkIndex >= hunkRows.length - 1} onclick={() => void scrollToHunk(1)}>Next hunk</button>
+						<span class="hunk-counter">{hunkRows.length ? `${activeHunkIndex + 1}/${hunkRows.length}` : '0/0'} hunks</span>
 						<button onclick={() => markReviewed(selectedFile!)}>{reviewed[fileKey(selectedFile)] ? 'Reviewed ✓' : 'Mark reviewed'}</button>
 					</div>
 				{/if}
@@ -611,8 +750,11 @@
 				<p class="loading">Loading file diff…</p>
 			{:else if diffLines.length > 0}
 				<div class="virtual-diff">
+					{#if hiddenDiffRows > 0}
+						<div class="diff-window-banner">Rendering first {Math.min(renderedRowLimit, diffRows.length)} of {diffRows.length} diff rows for large-patch responsiveness. <button onclick={() => (renderedRowLimit = Math.min(diffRows.length, renderedRowLimit + 900))}>Load next rows</button><button onclick={() => (renderedRowLimit = diffRows.length)}>Show all</button></div>
+					{/if}
 					<div class="diff-flow">
-						{#each displayItems as item (item.key)}
+						{#each visibleDisplayItems as item (item.key)}
 							<div class="diff-item">
 								{#if item.type === 'diff'}
 									<div
@@ -621,6 +763,7 @@
 										class:range-pending={rowInAnchorRange(item.row, dragPreviewAnchor)}
 										class:range-active={rowInAnchorRange(item.row, activeDraftAnchor)}
 										data-row-index={item.row.index}
+										data-hunk-index={item.row.kind === 'header' ? item.row.hunkIndex : undefined}
 									>
 										<span class="line-no old-no">{lineLabel(item.row, 'old')}</span>
 										<span class="line-no new-no">{lineLabel(item.row, 'new')}</span>
@@ -640,11 +783,12 @@
 										<code>{item.row.text || ' '}</code>
 									</div>
 								{:else if item.type === 'comment'}
-									<article class="inline-comment">
+									<article class="inline-comment" id={commentHash(item.comment)} data-comment-id={item.comment.id}>
 										<div class="comment-meta">
 											<strong>{item.comment.author}</strong>
 											<span>{commentLabel(item.comment)}</span>
 											<time datetime={item.comment.createdAt}>{new Date(item.comment.createdAt).toLocaleString()}</time>
+											<a href={commentShareHref(item.comment)} onclick={() => void copyCommentLink(item.comment)}>Copy link</a>
 										</div>
 										<p>{item.comment.body}</p>
 									</article>
@@ -684,19 +828,26 @@
 				<p class="eyebrow">Review comments</p>
 				<h2>Inline comments</h2>
 			</div>
-			<span class="count-pill">{comments.length}</span>
+			<div class="comments-toolbar">
+				<button onclick={() => void triggerHermesAgent()} disabled={agentTriggering}>{agentTriggering ? 'Notifying executor…' : 'Notify executor bot about open comments'}</button>
+				<span class="count-pill">{comments.length}</span>
+			</div>
 		</div>
+		{#if agentTriggerMessage}<p class="success compact-status">{agentTriggerMessage}</p>{/if}
+		{#if agentTriggerError}<p class="error compact-status">{agentTriggerError}</p>{/if}
 		<p class="comment-filter-note">Use <strong>+</strong> for a single-line comment, or press and drag <strong>+</strong> across diff lines before releasing to choose a line range. Comments are anchored by path, side, and line range, and exported by <code>ltsql-review comments --review {data.review.id} --json</code>.</p>
 		{#if comments.length === 0}
 			<p class="empty-comment">No inline comments yet.</p>
 		{:else}
 			<div class="comment-list">
 				{#each comments as comment}
-					<article>
+					<article id={`overview-${commentHash(comment)}`}>
 						<div class="comment-meta">
 							<strong>{comment.author}</strong>
 							<span>{comment.filePath ?? 'general'}{comment.lineStart ? `:${comment.lineStart}` : ''} · {comment.side === 'old' ? 'LEFT' : comment.side === 'new' ? 'RIGHT' : 'FILE'}</span>
 							<time datetime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
+							<button type="button" onclick={() => void openComment(comment)}>Open</button>
+							<a href={commentShareHref(comment)} onclick={() => void copyCommentLink(comment)}>Copy link</a>
 						</div>
 						<p>{comment.body}</p>
 					</article>
@@ -802,10 +953,13 @@
 	}
 	.review-workspace {
 		display: grid;
-		grid-template-columns: minmax(300px, 360px) minmax(300px, 440px) minmax(520px, 1fr);
+		grid-template-columns: var(--review-columns, minmax(300px, 360px) minmax(300px, 440px) minmax(520px, 1fr));
 		gap: 12px;
 		align-items: stretch;
 		min-height: 78vh;
+	}
+	.review-workspace.commits-collapsed {
+		grid-template-columns: 58px minmax(320px, 480px) minmax(620px, 1fr);
 	}
 	.review-workspace.without-commits {
 		grid-template-columns: minmax(320px, 440px) minmax(520px, 1fr);
@@ -813,6 +967,7 @@
 	.commit-rail,
 	.file-pane,
 	.diff-panel {
+		min-width: 0;
 		min-height: 0;
 		max-height: 82vh;
 		display: flex;
@@ -825,6 +980,51 @@
 	.commit-rail:focus-visible {
 		outline: 3px solid #bfdbfe;
 		outline-offset: 2px;
+	}
+	.commit-rail.rail-collapsed {
+		align-items: stretch;
+	}
+	.commit-rail-head {
+		min-height: 44px;
+	}
+	.commit-rail.rail-collapsed .commit-rail-head {
+		flex-direction: column;
+		align-items: center;
+		justify-content: flex-start;
+		gap: 8px;
+		padding: 10px 8px;
+	}
+	.commit-head-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.panel-toggle {
+		display: inline-grid;
+		place-items: center;
+		width: 30px;
+		height: 30px;
+		padding: 0;
+		border-radius: 999px;
+		font-size: 1.15rem;
+		font-weight: 850;
+		line-height: 1;
+	}
+	.panel-toggle.expand {
+		width: 34px;
+		height: 34px;
+		font-size: 1.25rem;
+	}
+	.collapsed-count {
+		display: inline-grid;
+		place-items: center;
+		width: 34px;
+		height: 34px;
+		border-radius: 999px;
+		background: #eff6ff;
+		color: #1d4ed8;
+		font-weight: 850;
+		font-size: 0.8rem;
 	}
 	.commit-rail,
 	.commit-rail * {
@@ -974,7 +1174,8 @@
 		min-height: 96px;
 	}
 	.filters,
-	.diff-actions {
+	.diff-actions,
+	.comments-toolbar {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 7px;
@@ -1030,6 +1231,28 @@
 		background: #dcfce7;
 		color: #166534;
 	}
+	em.shared-badge {
+		background: #fef3c7;
+		color: #92400e;
+	}
+	.commit-compare-card {
+		display: grid;
+		gap: 6px;
+		padding: 10px 12px;
+		border-bottom: 1px solid #e4eaf3;
+		background: #fffbeb;
+		font-size: 0.84rem;
+	}
+	.commit-compare-card p {
+		margin: 0;
+		color: #667085;
+		word-break: break-word;
+	}
+	.compare-actions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
 	.diff-header {
 		display: flex;
 		justify-content: space-between;
@@ -1054,6 +1277,21 @@
 	}
 	.diff-flow {
 		min-width: max-content;
+	}
+	.diff-window-banner {
+		position: sticky;
+		top: 0;
+		z-index: 3;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		background: #172554;
+		color: #dbeafe;
+		font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	}
+	.diff-window-banner button {
+		padding: 3px 8px;
 	}
 	.diff-item {
 		position: relative;
@@ -1137,6 +1375,16 @@
 		background: #fef2f2;
 		color: #b91c1c;
 	}
+	.success {
+		margin: 14px;
+		border-radius: 10px;
+		padding: 12px;
+		background: #ecfdf3;
+		color: #166534;
+	}
+	.compact-status {
+		margin: 10px 0;
+	}
 	.comments {
 		margin-top: 16px;
 		padding: 14px;
@@ -1169,6 +1417,10 @@
 		color: #111827;
 		font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 		line-height: 1.3;
+	}
+	.inline-comment:target {
+		border-color: #f59e0b;
+		box-shadow: 0 0 0 3px rgb(245 158 11 / 0.25);
 	}
 	.inline-comment p {
 		margin: 6px 0 0;

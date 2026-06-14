@@ -6,6 +6,13 @@ import type { ReviewStore } from '../storage/db';
 import { captureCommitDiff, captureRangeDiff, captureShowDiff, captureStagedDiff, captureWorktreeDiff, getCommitSummary, getHeadCommit, listRangeCommits, type GitCommitSummary } from '../git/git';
 import { parseDiffFileSections, type DiffFileStat } from '../git/diffStats';
 
+export interface ReviewNotificationTarget {
+	platform: 'discord';
+	channelId: string;
+	threadId?: string;
+	executorMention?: string;
+}
+
 export interface PublishReviewInput {
 	repoRoot: string;
 	title: string;
@@ -14,6 +21,7 @@ export interface PublishReviewInput {
 	createdBy: string;
 	store: ReviewStore;
 	baseUrl?: string;
+	notificationTarget?: ReviewNotificationTarget | null;
 }
 
 export interface PublishReviewResult {
@@ -100,6 +108,7 @@ export interface PublishDocumentReviewInput {
 	createdBy: string;
 	store: ReviewStore;
 	baseUrl?: string;
+	notificationTarget?: ReviewNotificationTarget | null;
 }
 
 export interface PublishDocumentReviewResult {
@@ -145,7 +154,7 @@ export function publishDocumentReview(input: PublishDocumentReviewInput): Publis
 	const document = { path: sourcePath, artifactPath: markdownPath, lineCount };
 	writeFileSync(markdownPath, markdown, 'utf8');
 	writeFileSync(filesPath, JSON.stringify({ document }, null, 2), 'utf8');
-	writeFileSync(metadataPath, JSON.stringify({ review, version, document }, null, 2), 'utf8');
+	writeFileSync(metadataPath, JSON.stringify({ review, version, document, notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
 	input.store.insertReview(review);
 	input.store.insertVersion(version);
 	const baseUrl = input.baseUrl ?? 'http://localhost:5173';
@@ -165,28 +174,33 @@ export async function publishReview(input: PublishReviewInput): Promise<PublishR
 	mkdirSync(commitArtifactsDir, { recursive: true });
 
 	const diffPath = path.join(artifactDir, 'diff.patch');
-	let files: DiffFileStat[] = [];
+	let commitFiles: DiffFileStat[] = [];
 	const commits: ReviewCommitSection[] = commitDiffs.map(({ diff: commitDiff, ...commit }, index) => {
 		const id = commitId(index);
 		const diffPath = path.join(commitArtifactsDir, `${id}.patch`);
-		const commitFiles = parseDiffFileSections(commitDiff).map(({ patch, ...file }) => {
+		const filesInCommit = parseDiffFileSections(commitDiff).map(({ patch, ...file }) => {
 			const fileId = prefixFileId(id, file.id);
 			const patchPath = path.join(fileArtifactsDir, `${fileId}.patch`);
 			writeFileSync(patchPath, patch, 'utf8');
 			return { ...file, id: fileId, patchPath } satisfies DiffFileStat;
 		});
 		writeFileSync(diffPath, commitDiff, 'utf8');
-		files = [...files, ...commitFiles];
-		return { ...commit, id, files: commitFiles, diffPath, ...summarizeFiles(commitFiles) };
+		commitFiles = [...commitFiles, ...filesInCommit];
+		return { ...commit, id, files: filesInCommit, diffPath, ...summarizeFiles(filesInCommit) };
 	});
 
-	if (files.length === 0) {
-		files = parseDiffFileSections(diff).map(({ patch, ...file }) => {
-			const patchPath = path.join(fileArtifactsDir, `${file.id}.patch`);
-			writeFileSync(patchPath, patch, 'utf8');
-			return { ...file, patchPath } satisfies DiffFileStat;
-		});
+	// The top-level files artifact powers the review page's All/Combined view,
+	// so store the combined range/worktree patch rather than per-commit patches.
+	let files: DiffFileStat[] = parseDiffFileSections(diff).map(({ patch, ...file }) => {
+		const patchPath = path.join(fileArtifactsDir, `${file.id}.patch`);
+		writeFileSync(patchPath, patch, 'utf8');
+		return { ...file, patchPath } satisfies DiffFileStat;
+	});
+
+	if (files.length === 0 && commitFiles.length > 0) {
+		files = commitFiles;
 	}
+
 	const filesPath = path.join(artifactDir, 'files.json');
 	const commitsPath = path.join(artifactDir, 'commits.json');
 	const metadataPath = path.join(artifactDir, 'metadata.json');
@@ -217,7 +231,7 @@ export async function publishReview(input: PublishReviewInput): Promise<PublishR
 	writeFileSync(diffPath, diff, 'utf8');
 	writeFileSync(filesPath, JSON.stringify(files, null, 2), 'utf8');
 	writeFileSync(commitsPath, JSON.stringify(commits, null, 2), 'utf8');
-	writeFileSync(metadataPath, JSON.stringify({ review, version, commitsPath }, null, 2), 'utf8');
+	writeFileSync(metadataPath, JSON.stringify({ review, version, commitsPath, notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
 	input.store.insertReview(review);
 	input.store.insertVersion(version);
 

@@ -78,6 +78,13 @@ export function getReviewDetail(reviewId: string) {
 	const latestVersion = store.getLatestVersion(reviewId);
 	let files = latestVersion ? readFilesArtifact(latestVersion.filesPath).map(normalizeLargeFlag) : [];
 	const commits = latestVersion ? readCommitsArtifact(latestVersion.filesPath).map(normalizeCommitLargeFlags) : [];
+	// The top-level file list represents the combined range patch shown by the
+	// "All commits" row. Older range snapshots stored a concatenation of each
+	// individual commit's files in files.json, so rebuild the combined local
+	// commits patch metadata from diff.patch whenever commit sections exist.
+	if (latestVersion && commits.length > 0) {
+		files = parseDiffFileStats(readTextArtifact(latestVersion.diffPath, 'diff')).map(normalizeLargeFlag);
+	}
 	// Backward compatibility: old snapshots only stored path/addition metadata.
 	// Rebuild lightweight per-file metadata from the raw patch without sending the full diff in SSR data.
 	if (latestVersion && files.some((file: { id?: string }) => !file.id)) {
@@ -100,6 +107,13 @@ export function getReviewFileDiff(reviewId: string, version: number, fileId: str
 	const files = readFilesArtifact(latestVersion.filesPath);
 	const file = files.find((entry: { id?: string }) => entry.id === fileId);
 	if (file?.patchPath) return readTextArtifact(file.patchPath, 'file diff');
+
+	const commits = readCommitsArtifact(latestVersion.filesPath);
+	for (const commit of commits) {
+		const commitFile = commit.files?.find((entry: { id?: string }) => entry.id === fileId);
+		if (commitFile?.patchPath) return readTextArtifact(commitFile.patchPath, 'commit file diff');
+	}
+
 	// Backward compatibility for snapshots created before per-file artifacts were written.
 	const section = parseDiffFileSections(readTextArtifact(latestVersion.diffPath, 'diff')).find((entry) => entry.id === fileId);
 	return section?.patch ?? null;

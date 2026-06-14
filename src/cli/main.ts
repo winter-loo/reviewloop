@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createReviewStore } from '../lib/server/storage/db';
 import { getGitRoot } from '../lib/server/git/git';
-import { publishDocumentReview, publishReview } from '../lib/server/reviews/publish';
+import { publishDocumentReview, publishReview, type ReviewNotificationTarget } from '../lib/server/reviews/publish';
 import type { CommentSide, ReviewCommentRecord, ReviewSourceKind } from '../lib/server/storage/types';
 
 function parseArgs(argv: string[]) {
@@ -38,7 +38,7 @@ function usage() {
 	return `ltsql-review
 
 Commands:
-  publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title>
+  publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title> [--discord-channel <id>] [--discord-thread <id>] [--executor-mention <mention>]
   publish-doc --file <markdown.md> --title <title>
   list
   add-comment --review <id> --file <path> --line <n> [--line-end <n>] --side old|new --body <text> [--author <name>]
@@ -49,6 +49,20 @@ Commands:
 function reviewSourceKind(value: string): ReviewSourceKind {
 	if (value === 'worktree' || value === 'staged') return value;
 	throw new Error(`Unsupported --type '${value}'. Use worktree or staged, or pass --range/--show.`);
+}
+
+
+function notificationTargetFromFlags(flags: Map<string, string | boolean>): ReviewNotificationTarget | null {
+	const channelId = stringFlag(flags, 'discord-channel') ?? process.env.LTSQL_REVIEW_DISCORD_CHANNEL_ID;
+	const threadId = stringFlag(flags, 'discord-thread') ?? process.env.LTSQL_REVIEW_DISCORD_THREAD_ID;
+	const executorMention = stringFlag(flags, 'executor-mention') ?? process.env.LTSQL_REVIEW_EXECUTOR_MENTION;
+	if (!channelId && !threadId) return null;
+	return {
+		platform: 'discord',
+		channelId: channelId ?? threadId!,
+		threadId,
+		executorMention
+	};
 }
 
 function commentSide(value: string | undefined): CommentSide {
@@ -119,7 +133,8 @@ async function main() {
 				sourceRef,
 				createdBy: process.env.USER || 'unknown',
 				store,
-				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173'
+				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173',
+				notificationTarget: notificationTargetFromFlags(flags)
 			});
 			console.log(`Created review ${result.review.id}`);
 			console.log(`URL: ${result.url}`);
@@ -141,7 +156,8 @@ async function main() {
 				title,
 				createdBy: process.env.USER || 'unknown',
 				store,
-				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173'
+				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173',
+				notificationTarget: notificationTargetFromFlags(flags)
 			});
 			console.log(`Created review ${result.review.id}`);
 			console.log(`URL: ${result.url}`);

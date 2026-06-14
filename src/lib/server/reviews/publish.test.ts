@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -89,7 +89,13 @@ describe('publishReview', () => {
 			sourceRef: `${base}..HEAD`,
 			createdBy: 'tester',
 			store,
-			baseUrl: 'http://localhost:5173'
+			baseUrl: 'http://localhost:5173',
+			notificationTarget: {
+				platform: 'discord',
+				channelId: '1492092161414398074',
+				threadId: '1505797759687725129',
+				executorMention: '<@1234567890>'
+			}
 		});
 
 		expect(result.commits).toHaveLength(2);
@@ -101,6 +107,14 @@ describe('publishReview', () => {
 		expect(result.commits[0].files).toEqual([expect.objectContaining({ id: 'c000001-f000001', path: 'a.txt' })]);
 		expect(result.commits[1].files).toEqual([expect.objectContaining({ id: 'c000002-f000001', path: 'b.txt' })]);
 		expect(result.files.map((file) => file.path)).toEqual(['a.txt', 'b.txt']);
-		expect(result.files.map((file) => file.id)).toEqual(['c000001-f000001', 'c000002-f000001']);
+		expect(result.files.map((file) => file.id)).toEqual(['000001', '000002']);
+		expect(result.files.every((file) => !file.id?.startsWith('c'))).toBe(true);
+		const metadata = JSON.parse(readFileSync(path.join(store.home, 'artifacts', result.review.id, 'v1', 'metadata.json'), 'utf8'));
+		expect(metadata.notificationTarget).toEqual({
+			platform: 'discord',
+			channelId: '1492092161414398074',
+			threadId: '1505797759687725129',
+			executorMention: '<@1234567890>'
+		});
 	});
 });
