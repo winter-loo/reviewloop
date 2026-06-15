@@ -1,4 +1,6 @@
 <script lang="ts">
+	import ReviewHero from '$lib/components/review/ReviewHero.svelte';
+
 	let { data } = $props();
 
 	type ReviewComment = {
@@ -98,17 +100,14 @@
 
 <main class="page">
 	<nav><a href="/reviews">← Reviews</a></nav>
-	<header class="hero">
-		<p class="eyebrow">{data.review.id} · markdown document review</p>
-		<h1>{data.review.title}</h1>
-		<div class="meta">
-			<span>v{data.latestVersion.version}</span>
-			<span>{lineCount} lines</span>
-			<span>{openComments.length} open comments</span>
-		</div>
-		<code>{markdownPath}</code>
-		<p class="hint">Comments are persisted through the shared review comment API/CLI, so Hermes can read them with <code>ltsql-review comments --review {data.review.id} --json</code>.</p>
-	</header>
+	<ReviewHero
+		eyebrow={`${data.review.id} · markdown document review`}
+		title={data.review.title}
+		meta={[`v${data.latestVersion.version}`, `${lineCount} lines`, `${openComments.length} open comments`]}
+		codeText={markdownPath}
+	>
+		<p class="hint">Comments are persisted through the shared review comment API/CLI, so agents can read them with <code>reviewctl comments --review {data.review.id} --json</code>.</p>
+	</ReviewHero>
 
 	<section class="review-layout">
 		<article class="markdown-card" aria-label="Markdown design document">
@@ -174,37 +173,6 @@
 		color: #2563eb;
 		font-weight: 700;
 		text-decoration: none;
-	}
-	.hero {
-		margin-top: 20px;
-		padding: 24px;
-		border: 1px solid #dbe3ef;
-		border-radius: 18px;
-		background: white;
-		box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
-	}
-	.eyebrow {
-		margin: 0 0 8px;
-		color: #2563eb;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-	h1 {
-		margin: 0;
-		font-size: clamp(1.8rem, 3vw, 3rem);
-	}
-	.meta {
-		display: flex;
-		gap: 10px;
-		flex-wrap: wrap;
-		margin: 16px 0;
-		color: #475569;
-	}
-	.meta span {
-		padding: 6px 10px;
-		border-radius: 999px;
-		background: #eef2ff;
 	}
 	code {
 		word-break: break-all;

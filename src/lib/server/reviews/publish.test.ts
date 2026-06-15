@@ -116,5 +116,16 @@ describe('publishReview', () => {
 			threadId: '1505797759687725129',
 			executorMention: '<@1234567890>'
 		});
+		const manifest = JSON.parse(readFileSync(path.join(store.home, 'artifacts', result.review.id, 'v1', 'manifest.json'), 'utf8'));
+		expect(manifest.reviewKind).toBe('code');
+		expect(manifest.source).toEqual(expect.objectContaining({ type: 'git-diff', refKind: 'range', repoRoot: repo }));
+		expect(manifest.entries.map((entry: { id: string; path: string }) => [entry.id, entry.path])).toEqual([
+			['000001', 'a.txt'],
+			['000002', 'b.txt']
+		]);
+		expect(manifest.groups.map((group: { id: string; entries: string[] }) => [group.id, group.entries])).toEqual([
+			['c000001', ['c000001-f000001']],
+			['c000002', ['c000002-f000001']]
+		]);
 	});
 });

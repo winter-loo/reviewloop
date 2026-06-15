@@ -3,6 +3,8 @@ import path from 'node:path';
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { getReviewDetail } from '$lib/server/storage/queries';
 import { getReviewStore } from '$lib/server/storage/store';
+import { reviewPlatformDiscordTargetEnv, reviewPlatformGatewayNotifyUrl, reviewPlatformGatewayToken, reviewPlatformPublicUrl } from '$lib/server/config/env';
+import { commentWithAnchor } from '$lib/server/comments/anchors';
 import type { ReviewCommentRecord } from '$lib/server/storage/types';
 
 type DiscordNotificationTarget = {
@@ -28,14 +30,14 @@ function readMetadataTarget(filesPath: string): DiscordNotificationTarget | null
 }
 
 function envTarget(): DiscordNotificationTarget | null {
-	const channelId = process.env.LTSQL_REVIEW_DISCORD_CHANNEL_ID;
-	const threadId = process.env.LTSQL_REVIEW_DISCORD_THREAD_ID;
+	const envTarget = reviewPlatformDiscordTargetEnv();
+	const { channelId, threadId } = envTarget;
 	if (!channelId && !threadId) return null;
 	return {
 		platform: 'discord',
 		channelId: channelId ?? threadId!,
 		threadId,
-		executorMention: process.env.LTSQL_REVIEW_EXECUTOR_MENTION
+		executorMention: envTarget.executorMention
 	};
 }
 
@@ -50,7 +52,7 @@ function formatComment(comment: ReviewCommentRecord, index: number) {
 
 function buildDiscordMessage(reviewId: string, reviewUrl: string, comments: ReviewCommentRecord[], target: DiscordNotificationTarget) {
 	const mention = target.executorMention ? `${target.executorMention} ` : '';
-	const header = `${mention}请处理 LTSQL review 的新增/open comments。\nReview: ${reviewId}\nURL: ${reviewUrl}\nOpen comments: ${comments.length}`;
+	const header = `${mention}请处理 review 的新增/open comments。\nReview: ${reviewId}\nURL: ${reviewUrl}\nOpen comments: ${comments.length}`;
 	const details = comments.map(formatComment).join('\n\n');
 	const full = `${header}\n\n${details}`;
 	if (full.length <= MAX_MESSAGE_CHARS) return full;
@@ -58,11 +60,12 @@ function buildDiscordMessage(reviewId: string, reviewUrl: string, comments: Revi
 }
 
 async function notifyGateway(payload: unknown) {
-	const gatewayUrl = process.env.LTSQL_REVIEW_HERMES_GATEWAY_NOTIFY_URL;
-	if (!gatewayUrl) throw new Error('LTSQL_REVIEW_HERMES_GATEWAY_NOTIFY_URL is not configured');
+	const gatewayUrl = reviewPlatformGatewayNotifyUrl();
+	if (!gatewayUrl) throw new Error('REVIEW_PLATFORM_GATEWAY_NOTIFY_URL is not configured');
 	const headers: Record<string, string> = { 'content-type': 'application/json' };
-	if (process.env.LTSQL_REVIEW_HERMES_GATEWAY_TOKEN) {
-		headers.authorization = `Bearer ${process.env.LTSQL_REVIEW_HERMES_GATEWAY_TOKEN}`;
+	const token = reviewPlatformGatewayToken();
+	if (token) {
+		headers.authorization = `Bearer ${token}`;
 	}
 	const response = await fetch(gatewayUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
 	const text = sanitizeOutput(await response.text());
@@ -91,15 +94,19 @@ export const POST: RequestHandler = async ({ params }) => {
 		);
 	}
 	if (!target) {
-		return json({ error: 'No Discord thread is linked to this review', message: 'Publish the review with --discord-channel/--discord-thread or configure LTSQL_REVIEW_DISCORD_CHANNEL_ID/LTSQL_REVIEW_DISCORD_THREAD_ID.' }, { status: 409 });
+		return json({ error: 'No Discord thread is linked to this review', message: 'Publish the review with --discord-channel/--discord-thread or configure REVIEW_PLATFORM_DISCORD_CHANNEL_ID/REVIEW_PLATFORM_DISCORD_THREAD_ID.' }, { status: 409 });
 	}
 
-	const reviewUrl = process.env.LTSQL_REVIEW_PUBLIC_URL
-		? `${process.env.LTSQL_REVIEW_PUBLIC_URL.replace(/\/$/, '')}/reviews/${reviewId}`
+	const publicUrl = reviewPlatformPublicUrl();
+	const reviewUrl = publicUrl
+		? `${publicUrl.replace(/\/$/, '')}/reviews/${reviewId}`
 		: `/reviews/${reviewId}`;
 	const message = buildDiscordMessage(reviewId, reviewUrl, comments, target);
+	const reviewKind = detail.review.sourceKind === 'document' ? 'document' : 'code';
+	const structuredComments = comments.map((comment) => commentWithAnchor(comment, reviewKind));
 	const payload = {
-		type: 'ltsql_review.open_comments',
+		type: 'review.open_comments',
+		legacyType: 'ltsql_review.open_comments',
 		target,
 		message,
 		review: {
@@ -111,18 +118,7 @@ export const POST: RequestHandler = async ({ params }) => {
 			sourceKind: detail.review.sourceKind,
 			sourceRef: detail.review.sourceRef
 		},
-		comments: comments.map((comment) => ({
-			id: comment.id,
-			filePath: comment.filePath,
-			side: comment.side,
-			lineStart: comment.lineStart,
-			lineEnd: comment.lineEnd,
-			body: comment.body,
-			author: comment.author,
-			status: comment.status,
-			createdAt: comment.createdAt,
-			updatedAt: comment.updatedAt
-		}))
+		comments: structuredComments
 	};
 
 	try {

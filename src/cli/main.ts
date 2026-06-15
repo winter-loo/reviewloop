@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createReviewStore } from '../lib/server/storage/db';
 import { getGitRoot } from '../lib/server/git/git';
 import { publishDocumentReview, publishReview, type ReviewNotificationTarget } from '../lib/server/reviews/publish';
+import { reviewPlatformBaseUrl, reviewPlatformDiscordTargetEnv } from '../lib/server/config/env';
 import type { CommentSide, ReviewCommentRecord, ReviewSourceKind } from '../lib/server/storage/types';
 
 function parseArgs(argv: string[]) {
@@ -35,7 +36,7 @@ function stringFlag(flags: Map<string, string | boolean>, name: string) {
 }
 
 function usage() {
-	return `ltsql-review
+	return `reviewctl (ltsql-review compatible alias)
 
 Commands:
   publish --repo <git-root> [--type worktree|staged] [--range <range>] [--show <ref>] --title <title> [--discord-channel <id>] [--discord-thread <id>] [--executor-mention <mention>]
@@ -53,9 +54,10 @@ function reviewSourceKind(value: string): ReviewSourceKind {
 
 
 function notificationTargetFromFlags(flags: Map<string, string | boolean>): ReviewNotificationTarget | null {
-	const channelId = stringFlag(flags, 'discord-channel') ?? process.env.LTSQL_REVIEW_DISCORD_CHANNEL_ID;
-	const threadId = stringFlag(flags, 'discord-thread') ?? process.env.LTSQL_REVIEW_DISCORD_THREAD_ID;
-	const executorMention = stringFlag(flags, 'executor-mention') ?? process.env.LTSQL_REVIEW_EXECUTOR_MENTION;
+	const envTarget = reviewPlatformDiscordTargetEnv();
+	const channelId = stringFlag(flags, 'discord-channel') ?? envTarget.channelId;
+	const threadId = stringFlag(flags, 'discord-thread') ?? envTarget.threadId;
+	const executorMention = stringFlag(flags, 'executor-mention') ?? envTarget.executorMention;
 	if (!channelId && !threadId) return null;
 	return {
 		platform: 'discord',
@@ -119,7 +121,7 @@ async function main() {
 		if (command === 'publish') {
 			const repoInput = stringFlag(flags, 'repo') ?? process.cwd();
 			const repoRoot = await getGitRoot(repoInput);
-			const title = stringFlag(flags, 'title') ?? 'Untitled LTSQL review';
+			const title = stringFlag(flags, 'title') ?? 'Untitled code review';
 			const range = stringFlag(flags, 'range');
 			const show = stringFlag(flags, 'show');
 			const type = reviewSourceKind(stringFlag(flags, 'type') ?? 'worktree');
@@ -133,7 +135,7 @@ async function main() {
 				sourceRef,
 				createdBy: process.env.USER || 'unknown',
 				store,
-				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173',
+				baseUrl: reviewPlatformBaseUrl(),
 				notificationTarget: notificationTargetFromFlags(flags)
 			});
 			console.log(`Created review ${result.review.id}`);
@@ -141,7 +143,7 @@ async function main() {
 			console.log(`Files: ${result.files.length}`);
 			if (result.files.length === 0 && sourceKind === 'worktree') {
 				console.log(
-					'Hint: worktree review only captures uncommitted changes. For committed LTSQL work, publish a commit range, e.g. --range "refs/remotes/git-svn..HEAD".'
+					'Hint: worktree review only captures uncommitted changes. For committed work, publish a commit range, e.g. --range "origin/main..HEAD".'
 				);
 			}
 			return;
@@ -156,7 +158,7 @@ async function main() {
 				title,
 				createdBy: process.env.USER || 'unknown',
 				store,
-				baseUrl: process.env.LTSQL_REVIEW_BASE_URL || 'http://localhost:5173',
+				baseUrl: reviewPlatformBaseUrl(),
 				notificationTarget: notificationTargetFromFlags(flags)
 			});
 			console.log(`Created review ${result.review.id}`);

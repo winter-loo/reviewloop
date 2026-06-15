@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { getReviewDetail, ReviewArtifactReadError } from '$lib/server/storage/queries';
 import { getReviewStore } from '$lib/server/storage/store';
 import type { DiffFileStat } from '$lib/server/git/diffStats';
@@ -15,6 +15,9 @@ type ReviewSummary = {
 };
 
 export function load({ params }) {
+	const store = getReviewStore();
+	const record = store.getReview(params.id);
+	if (record?.sourceKind === 'document') throw redirect(307, `/document-reviews/${params.id}`);
 	let detail;
 	try {
 		detail = getReviewDetail(params.id);
@@ -25,7 +28,7 @@ export function load({ params }) {
 		throw cause;
 	}
 	if (!detail || !detail.latestVersion) throw error(404, 'Review not found');
-	const comments = getReviewStore().listComments(params.id);
+	const comments = store.listComments(params.id);
 	const summary = (detail.files as DiffFileStat[]).reduce(
 		(acc: ReviewSummary, file: DiffFileStat) => {
 			acc.additions += file.additions ?? 0;

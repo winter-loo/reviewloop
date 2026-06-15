@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { error, json } from '@sveltejs/kit';
 import { getReviewStore } from '$lib/server/storage/store';
+import { commentWithAnchor } from '$lib/server/comments/anchors';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = ({ params }) => {
 	const store = getReviewStore();
-	return json({ comments: store.listComments(params.id) });
+	const review = store.getReview(params.id);
+	const reviewKind = review?.sourceKind === 'document' ? 'document' : 'code';
+	return json({ comments: store.listComments(params.id).map((comment) => commentWithAnchor(comment, reviewKind)) });
 };
 
 export const POST: RequestHandler = async ({ params, request }) => {
@@ -54,5 +57,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		updatedAt: now
 	};
 	store.addComment(comment);
-	return json({ comment }, { status: 201 });
+	const reviewKind = review.sourceKind === 'document' ? 'document' : 'code';
+	return json({ comment: commentWithAnchor(comment, reviewKind) }, { status: 201 });
 };

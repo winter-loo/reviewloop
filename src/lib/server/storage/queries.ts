@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { readArtifactManifest } from '../artifacts/manifest';
 import { parseDiffFileSections, parseDiffFileStats } from '../git/diffStats';
 import { getReviewStore } from './store';
 
@@ -61,21 +62,33 @@ export function getDocumentReviewDetail(reviewId: string) {
 	const latestVersion = store.getLatestVersion(reviewId);
 	if (!latestVersion) return null;
 	const markdown = readTextArtifact(latestVersion.diffPath, 'document markdown');
+	const manifest = readArtifactManifest(latestVersion.filesPath);
 	let document = { path: review.sourceRef ?? 'document.md', artifactPath: latestVersion.diffPath, lineCount: markdown.split('\n').length };
+	if (manifest?.reviewKind === 'document') {
+		const entry = manifest.entries.find((item) => item.kind === 'document');
+		if (entry) document = { path: entry.path, artifactPath: entry.artifactPath ?? latestVersion.diffPath, lineCount: entry.lineCount ?? document.lineCount };
+	}
 	try {
 		const parsed = readFilesArtifact(latestVersion.filesPath);
 		if (parsed?.document) document = { ...document, ...parsed.document };
 	} catch {
 		// Older document reviews can still render from the markdown artifact alone.
 	}
-	return { review, latestVersion, document, markdown };
+	return { review, latestVersion, document, markdown, manifest };
 }
 
 export function getReviewDetail(reviewId: string) {
 	const store = getReviewStore();
 	const review = store.getReview(reviewId);
 	if (!review) return null;
+	// Keep generic review endpoints usable for document reviews too. Document
+	// artifacts store files.json as an object, not the code-review file array.
+	if (review.sourceKind === 'document') {
+		const documentDetail = getDocumentReviewDetail(reviewId);
+		return documentDetail ? { ...documentDetail, files: [], commits: [] } : null;
+	}
 	const latestVersion = store.getLatestVersion(reviewId);
+	const manifest = latestVersion ? readArtifactManifest(latestVersion.filesPath) : null;
 	let files = latestVersion ? readFilesArtifact(latestVersion.filesPath).map(normalizeLargeFlag) : [];
 	const commits = latestVersion ? readCommitsArtifact(latestVersion.filesPath).map(normalizeCommitLargeFlags) : [];
 	// The top-level file list represents the combined range patch shown by the
@@ -90,7 +103,7 @@ export function getReviewDetail(reviewId: string) {
 	if (latestVersion && files.some((file: { id?: string }) => !file.id)) {
 		files = parseDiffFileStats(readTextArtifact(latestVersion.diffPath, 'diff')).map(normalizeLargeFlag);
 	}
-	return { review, latestVersion, files, commits };
+	return { review, latestVersion, files, commits, manifest };
 }
 
 export function getReviewDiff(reviewId: string, version: number) {

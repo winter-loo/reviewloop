@@ -11,10 +11,12 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist-cli/ltsql-review.js --banner:js='#!/usr/bin/env node' && chmod +x dist-cli/ltsql-review.js",
-		"package:ltsql": "npm run check && npm test && npm run build && npm run build:cli && bash scripts/package-ltsql.sh"
+		"build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist-cli/reviewctl.js --banner:js='#!/usr/bin/env node' && chmod +x dist-cli/reviewctl.js && cp dist-cli/reviewctl.js dist-cli/ltsql-review.js",
+		"package:review-platform": "npm run check && npm test && npm run build && npm run build:cli && bash scripts/package-ltsql.sh",
+		"package:ltsql": "npm run package:review-platform"
 	},
 	"bin": {
+		"reviewctl": "./bin/reviewctl.js",
 		"ltsql-review": "./bin/ltsql-review.js"
 	},
 	"devDependencies": {

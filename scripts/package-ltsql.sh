@@ -13,7 +13,10 @@ cp -R "$repo_root/dist-cli" "$package_root/dist-cli"
 cp "$repo_root/package.json" "$package_root/package.json"
 cp "$repo_root/README.md" "$package_root/README.md"
 cp "$repo_root/scripts/start-ltsql-review.sh" "$package_root/start-ltsql-review.sh"
-chmod +x "$package_root/start-ltsql-review.sh" "$package_root/dist-cli/ltsql-review.js"
+mkdir -p "$package_root/bin"
+cp "$repo_root/dist-cli/reviewctl.js" "$package_root/bin/reviewctl.js"
+cp "$repo_root/dist-cli/ltsql-review.js" "$package_root/bin/ltsql-review.js"
+chmod +x "$package_root/start-ltsql-review.sh" "$package_root/dist-cli/reviewctl.js" "$package_root/dist-cli/ltsql-review.js" "$package_root/bin/reviewctl.js" "$package_root/bin/ltsql-review.js"
 
 (
 	cd "$repo_root/dist"

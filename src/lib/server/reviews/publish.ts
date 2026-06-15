@@ -1,10 +1,13 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { artifactsDir, reviewArtifactDir } from '../storage/paths';
 import type { ReviewRecord, ReviewSourceKind, ReviewVersionRecord } from '../storage/types';
 import type { ReviewStore } from '../storage/db';
-import { captureCommitDiff, captureRangeDiff, captureShowDiff, captureStagedDiff, captureWorktreeDiff, getCommitSummary, getHeadCommit, listRangeCommits, type GitCommitSummary } from '../git/git';
+import { writeArtifactManifest, type ReviewArtifactManifest } from '../artifacts/manifest';
+import { getHeadCommit, type GitCommitSummary } from '../git/git';
 import { parseDiffFileSections, type DiffFileStat } from '../git/diffStats';
+import { captureGitCommitSections, captureGitReviewDiff } from '../publishers/git-diff';
+import { captureDocumentReviewSource } from '../publishers/document';
 
 export interface ReviewNotificationTarget {
 	platform: 'discord';
@@ -55,20 +58,6 @@ function reviewIdFromDate(now = new Date()) {
 	return `CR-${date}-${suffix}`;
 }
 
-async function captureDiff(input: PublishReviewInput) {
-	if (input.sourceKind === 'worktree') return captureWorktreeDiff(input.repoRoot);
-	if (input.sourceKind === 'staged') return captureStagedDiff(input.repoRoot);
-	if (input.sourceKind === 'range') {
-		if (!input.sourceRef) throw new Error('sourceRef is required for range reviews');
-		return captureRangeDiff(input.repoRoot, input.sourceRef);
-	}
-	if (input.sourceKind === 'show') {
-		if (!input.sourceRef) throw new Error('sourceRef is required for show reviews');
-		return captureShowDiff(input.repoRoot, input.sourceRef);
-	}
-	throw new Error(`Unsupported source kind: ${input.sourceKind}`);
-}
-
 function commitId(index: number) {
 	return `c${String(index + 1).padStart(6, '0')}`;
 }
@@ -90,18 +79,6 @@ function summarizeFiles(files: DiffFileStat[]) {
 	);
 }
 
-async function captureCommitSections(input: PublishReviewInput): Promise<Array<GitCommitSummary & { diff: string }>> {
-	if (input.sourceKind === 'range' && input.sourceRef) {
-		const commits = await listRangeCommits(input.repoRoot, input.sourceRef);
-		return Promise.all(commits.map(async (commit) => ({ ...commit, diff: await captureCommitDiff(input.repoRoot, commit.sha) })));
-	}
-	if (input.sourceKind === 'show' && input.sourceRef) {
-		const commit = await getCommitSummary(input.repoRoot, input.sourceRef);
-		if (commit) return [{ ...commit, diff: await captureShowDiff(input.repoRoot, input.sourceRef) }];
-	}
-	return [];
-}
-
 export interface PublishDocumentReviewInput {
 	title: string;
 	filePath: string;
@@ -121,8 +98,7 @@ export interface PublishDocumentReviewResult {
 export function publishDocumentReview(input: PublishDocumentReviewInput): PublishDocumentReviewResult {
 	const now = timestamp();
 	const id = reviewIdFromDate();
-	const sourcePath = path.resolve(input.filePath);
-	const markdown = readFileSync(sourcePath, 'utf8');
+	const { sourcePath, content: markdown, lineCount } = captureDocumentReviewSource({ filePath: input.filePath, format: 'markdown' });
 	const artifactDir = reviewArtifactDir(id, 1).replace(artifactsDir(), path.join(input.store.home, 'artifacts'));
 	mkdirSync(artifactDir, { recursive: true });
 
@@ -150,11 +126,22 @@ export function publishDocumentReview(input: PublishDocumentReviewInput): Publis
 		filesPath,
 		createdAt: now
 	};
-	const lineCount = markdown.split('\n').length;
 	const document = { path: sourcePath, artifactPath: markdownPath, lineCount };
+	const manifest: ReviewArtifactManifest = {
+		schemaVersion: 1,
+		reviewKind: 'document',
+		review: { id: review.id, title: review.title, sourceKind: review.sourceKind, sourceRef: review.sourceRef, repoRoot: review.repoRoot },
+		version: { version: version.version, baseCommit: version.baseCommit, headCommit: version.headCommit, diffPath: version.diffPath, filesPath: version.filesPath },
+		source: { type: 'document', path: sourcePath, format: 'markdown', repoRoot: path.dirname(sourcePath) },
+		entries: [{ id: 'document', kind: 'document', path: sourcePath, artifactPath: markdownPath, language: 'markdown', lineCount }],
+		groups: [],
+		notificationTarget: input.notificationTarget ?? null,
+		legacyArtifacts: { document: markdownPath, files: filesPath, metadata: metadataPath }
+	};
 	writeFileSync(markdownPath, markdown, 'utf8');
 	writeFileSync(filesPath, JSON.stringify({ document }, null, 2), 'utf8');
-	writeFileSync(metadataPath, JSON.stringify({ review, version, document, notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
+	writeArtifactManifest(artifactDir, manifest);
+	writeFileSync(metadataPath, JSON.stringify({ review, version, document, manifestPath: path.join(artifactDir, 'manifest.json'), notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
 	input.store.insertReview(review);
 	input.store.insertVersion(version);
 	const baseUrl = input.baseUrl ?? 'http://localhost:5173';
@@ -164,9 +151,11 @@ export function publishDocumentReview(input: PublishDocumentReviewInput): Publis
 export async function publishReview(input: PublishReviewInput): Promise<PublishReviewResult> {
 	const now = timestamp();
 	const id = reviewIdFromDate();
+	if (input.sourceKind === 'document') throw new Error('Use publishDocumentReview for document sources');
+	const gitSource = { repoRoot: input.repoRoot, sourceKind: input.sourceKind, sourceRef: input.sourceRef ?? null };
 	const headCommit = await getHeadCommit(input.repoRoot).catch(() => null);
-	const diff = await captureDiff(input);
-	const commitDiffs = await captureCommitSections(input);
+	const diff = await captureGitReviewDiff(gitSource);
+	const commitDiffs = await captureGitCommitSections(gitSource);
 	const artifactDir = reviewArtifactDir(id, 1).replace(artifactsDir(), path.join(input.store.home, 'artifacts'));
 	const fileArtifactsDir = path.join(artifactDir, 'files');
 	const commitArtifactsDir = path.join(artifactDir, 'commits');
@@ -231,7 +220,35 @@ export async function publishReview(input: PublishReviewInput): Promise<PublishR
 	writeFileSync(diffPath, diff, 'utf8');
 	writeFileSync(filesPath, JSON.stringify(files, null, 2), 'utf8');
 	writeFileSync(commitsPath, JSON.stringify(commits, null, 2), 'utf8');
-	writeFileSync(metadataPath, JSON.stringify({ review, version, commitsPath, notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
+	const manifest: ReviewArtifactManifest = {
+		schemaVersion: 1,
+		reviewKind: 'code',
+		review: { id: review.id, title: review.title, sourceKind: review.sourceKind, sourceRef: review.sourceRef, repoRoot: review.repoRoot },
+		version: { version: version.version, baseCommit: version.baseCommit, headCommit: version.headCommit, diffPath: version.diffPath, filesPath: version.filesPath },
+		source: {
+			type: 'git-diff',
+			refKind: input.sourceKind as 'worktree' | 'staged' | 'show' | 'range',
+			repoRoot: input.repoRoot,
+			sourceRef: input.sourceRef ?? null,
+			headCommit
+		},
+		entries: files.map((file) => ({
+			id: file.id ?? file.path,
+			kind: 'file-diff',
+			path: file.path,
+			patchPath: file.patchPath,
+			lineCount: file.lineCount,
+			patchBytes: file.patchBytes,
+			additions: file.additions,
+			deletions: file.deletions,
+			status: file.status
+		})),
+		groups: commits.map((commit) => ({ id: commit.id, kind: 'commit', title: commit.subject, sha: commit.sha, entries: commit.files.map((file) => file.id ?? file.path) })),
+		notificationTarget: input.notificationTarget ?? null,
+		legacyArtifacts: { diff: diffPath, files: filesPath, commits: commitsPath, metadata: metadataPath }
+	};
+	writeArtifactManifest(artifactDir, manifest);
+	writeFileSync(metadataPath, JSON.stringify({ review, version, commitsPath, manifestPath: path.join(artifactDir, 'manifest.json'), notificationTarget: input.notificationTarget ?? null }, null, 2), 'utf8');
 	input.store.insertReview(review);
 	input.store.insertVersion(version);
 

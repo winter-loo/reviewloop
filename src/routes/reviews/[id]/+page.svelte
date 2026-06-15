@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
+	import ReviewHero from '$lib/components/review/ReviewHero.svelte';
 	import { getFileBadges, summarizeCommitMessage } from '$lib/review/commitUi';
 
 	let { data } = $props();
@@ -577,27 +578,28 @@
 </script>
 
 <svelte:head>
-	<title>{data.review.id} · LTSQL Review</title>
+	<title>{data.review.id} · Review</title>
 </svelte:head>
 
 <main class="page">
 	<nav><a href="/reviews">← Reviews</a></nav>
-	<header>
-		<p class="eyebrow">{data.review.id} · {data.review.status}</p>
-		<h1>{data.review.title}</h1>
-		<div class="meta">
-			<span>{data.review.sourceKind}{data.review.sourceRef ? ` ${data.review.sourceRef}` : ''}</span>
-			<span>v{latestVersion.version}</span>
-			<span>{data.files.length} files</span>
-			<span>+{data.summary.additions} -{data.summary.deletions}</span>
-			<span>{formatBytes(data.summary.patchBytes)} indexed</span>
-		</div>
-		<code>{data.review.repoRoot}</code>
+	<ReviewHero
+		eyebrow={`${data.review.id} · ${data.review.status}`}
+		title={data.review.title}
+		meta={[
+			`${data.review.sourceKind}${data.review.sourceRef ? ` ${data.review.sourceRef}` : ''}`,
+			`v${latestVersion.version}`,
+			`${data.files.length} files`,
+			`+${data.summary.additions} -${data.summary.deletions}`,
+			`${formatBytes(data.summary.patchBytes)} indexed`
+		]}
+		codeText={data.review.repoRoot}
+	>
 		<div class="actions">
 			<a class="button" href={`/api/reviews/${data.review.id}/raw.patch`}>Download raw patch</a>
 			<span>{data.summary.largeFiles} &gt;1 MiB collapsed · {data.summary.generatedFiles} generated-like labeled</span>
 		</div>
-	</header>
+	</ReviewHero>
 
 
 	<section class="summary">
@@ -877,17 +879,6 @@
 		text-decoration: none;
 		font-weight: 650;
 	}
-	header {
-		display: grid;
-		gap: 8px;
-		margin: 10px 0 14px;
-	}
-	header h1 {
-		margin: 0;
-		font-size: clamp(1.45rem, 2vw, 2rem);
-		letter-spacing: -0.03em;
-	}
-	header code,
 	.commit-facts code {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 	}
