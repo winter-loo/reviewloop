@@ -1,359 +1,427 @@
-# LTSQL Review Platform
+# ReviewLoop
 
-LTSQL Review Platform 是一个面向 LTSQL 本地开发流程的轻量级 code review 工具。它把 Git diff 捕获成持久、只读的 review 快照，并通过 CLI、Web 页面和 HTTP API 提供查看与评论能力，方便在提交前做本地评审。
+ReviewLoop is the human-in-the-loop review layer for AI agent work.
 
-## 项目目标
+It publishes code diffs, Markdown documents, and other review artifacts as durable, read-only snapshots. Humans review the snapshot, leave structured comments, and can route those comments back to an AI agent or executor for revision. The goal is not just to display a diff; it is to preserve the one place where a human can inspect, judge, and steer AI-generated work before it moves forward.
 
-- **不修改源仓库**：平台只读取 Git diff，不会在被 review 的 LTSQL 工作区内写文件、commit 或 push。
-- **持久化快照**：review 的 diff、文件统计和评论会保存到独立目录，默认是 `~/.ltsql-review`，也可以通过 `LTSQL_REVIEW_HOME` 指定。
-- **CLI + Web 一体**：CLI 用于发布和查询 review，SvelteKit Web 页面/API 用于浏览 diff 和提交评论。
-- **适合本地流程**：优先服务本地开发、提交前评审、临时 review 链接分享等场景。
+## Why this exists
 
-## 功能概览
+AI agents can write code, update documents, produce patches, and iterate quickly. That creates a new bottleneck: the human needs a stable control point where they can review what the agent produced, comment on concrete lines or artifacts, and send the feedback back into the agent loop.
 
-- 发布 worktree、staged、range、show 四类 Git diff review 快照。
-- SQLite 保存 review 元数据和评论。
-- artifact 文件保存每个 review version 的 `diff.patch` 和 `files.json`。
-- Web 页面：
-  - `/reviews`：review 列表。
-  - `/reviews/<review-id>`：review 详情、文件统计、diff、评论。
-- API：
-  - `GET /api/reviews`
-  - `GET /api/reviews/<review-id>`
-  - `GET /api/reviews/<review-id>/versions/<version>/diff`
-  - `GET /api/reviews/<review-id>/comments`
-  - `POST /api/reviews/<review-id>/comments`
+ReviewLoop provides that control point:
 
-## 环境要求
+1. **Agent or developer produces work** — code changes, a commit range, a staged patch, or a design document.
+2. **ReviewLoop captures an immutable snapshot** — the source repository or document is read, but not modified.
+3. **Human reviews in a browser** — comments are anchored to diff lines or document lines.
+4. **Feedback is machine-readable** — comments are available through the Web UI, HTTP API, and CLI JSON output.
+5. **Agent can be notified to revise** — open comments can be sent through a Gateway/Discord notification payload, including the structured comment details.
+
+## Design principles
+
+- **Human-in-the-loop by default**: ReviewLoop is the review/checkpoint layer between AI-generated work and acceptance.
+- **Read-only capture**: publishing a review snapshot never writes to the source Git repository, commits, pushes, or mutates the reviewed document.
+- **Durable artifacts**: every review version stores a snapshot under the review home, including legacy files and a generic `manifest.json`.
+- **Generic review model**: code diffs and documents share the same review/comment infrastructure.
+- **Agent-readable comments**: comments are persisted once and exposed consistently through browser UI, HTTP API, and CLI JSON.
+- **Compatible migration path**: `reviewctl` is the primary CLI, while the older `ltsql-review` alias and `LTSQL_REVIEW_*` environment variables remain supported for existing deployments.
+
+## What it can review
+
+### Code reviews
+
+Publish Git changes as review snapshots from:
+
+- uncommitted worktree diffs;
+- staged diffs;
+- a commit range such as `origin/main..HEAD`;
+- a single commit/ref via `--show`.
+
+For range reviews, the top-level view represents the merged/combined local patch, while individual commit rows keep their own per-commit file patches.
+
+### Document reviews
+
+Publish a Markdown document as a review artifact with stable line anchors. Document comments use the same persisted comment store and API as code review comments.
+
+### Agent feedback loops
+
+A review can include a Discord target when it is published. When humans add comments, the server can send the open comments to a configured Gateway endpoint. The payload includes:
+
+- `type: "review.open_comments"`;
+- `legacyType: "ltsql_review.open_comments"` for compatibility;
+- review metadata;
+- target channel/thread metadata;
+- structured comments with generic anchors such as `diff-line` or `document-line`.
+
+## Architecture
+
+```text
+reviewctl / ltsql-review CLI
+        │
+        ├── publish Git diff snapshots
+        ├── publish Markdown document snapshots
+        ├── add/read comments
+        │
+        ▼
+ReviewLoop storage home
+        ├── reviews.db                         # SQLite metadata and comments
+        └── artifacts/<review-id>/v<version>/  # immutable review artifacts
+            ├── manifest.json                  # generic code/document artifact model
+            ├── metadata.json                  # compatibility metadata
+            ├── diff.patch                     # code reviews
+            ├── files.json                     # code-review file metadata
+            ├── commits.json                   # range-review commit metadata
+            └── document.md                    # document reviews
+        │
+        ▼
+SvelteKit Web UI / HTTP API
+        ├── /reviews
+        ├── /reviews/<review-id>
+        ├── /document-reviews/<review-id>      # compatibility route for document reviews
+        └── /api/reviews/...
+```
+
+## Requirements
 
 - Node.js 24+ / npm
 - Git
-- 可写的 review 存储目录，默认：`~/.ltsql-review`
+- A writable review storage directory
 
-> 运行时使用 Node 24 内置 `node:sqlite`，不依赖 `better-sqlite3` 这类 native npm addon。因此可以在本地生成运行产物，再把 tar 包复制到 `ltsql` 上运行，目标机不需要执行 `npm install`。
+ReviewLoop uses Node 24's built-in `node:sqlite`, so the packaged server does not need native SQLite npm addons such as `better-sqlite3` on the deployment machine.
 
-安装依赖：
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-## 存储目录配置
-
-默认情况下，平台会把 review 数据保存到：
-
-```text
-~/.ltsql-review
-```
-
-目录内包含：
-
-```text
-reviews.db                  # SQLite 元数据和评论
-artifacts/<review-id>/v1/   # diff.patch、files.json 等快照文件
-```
-
-推荐在开发、测试或 smoke test 时显式指定：
-
-```bash
-export LTSQL_REVIEW_HOME=/tmp/ltsql-review-home
-```
-
-如果需要让 CLI 输出的 review URL 指向指定服务地址，可以设置：
-
-```bash
-export LTSQL_REVIEW_BASE_URL=http://localhost:5173
-```
-
-## 启动 Web 服务
-
-开发模式启动：
-
-```bash
-npm run dev
-```
-
-指定监听地址和端口：
-
-```bash
-npm run dev -- --host 127.0.0.1 --port 5173
-```
-
-启动后访问：
-
-```text
-http://localhost:5173/reviews
-```
-
-## CLI 使用
-
-CLI 入口：
-
-```bash
-npx ltsql-review --help
-```
-
-也可以直接执行本仓库里的入口文件：
-
-```bash
-node ./bin/ltsql-review.js --help
-```
-
-### 发布当前 worktree diff
-
-用于 review 当前工作区未提交修改：
-
-```bash
-npx ltsql-review publish \
-  --repo /path/to/ltsql-worktree \
-  --type worktree \
-  --title "TASK-12345 本地修改评审"
-```
-
-输出示例：
-
-```text
-Created review CR-20260529-6683
-URL: http://localhost:5173/reviews/CR-20260529-6683
-Files: 3
-```
-
-### 发布 staged diff
-
-用于 review 已 `git add` 但还没 commit 的改动：
-
-```bash
-npx ltsql-review publish \
-  --repo /path/to/ltsql-worktree \
-  --type staged \
-  --title "TASK-12345 staged diff 评审"
-```
-
-### 发布一个 commit range
-
-用于 review 一段 commit 范围：
-
-```bash
-npx ltsql-review publish \
-  --repo /path/to/ltsql-worktree \
-  --range "origin/main..HEAD" \
-  --title "TASK-12345 commit range 评审"
-```
-
-### 发布单个 ref/show
-
-用于 review 某个 commit 或 ref：
-
-```bash
-npx ltsql-review publish \
-  --repo /path/to/ltsql-worktree \
-  --show HEAD \
-  --title "TASK-12345 HEAD 评审"
-```
-
-### 查看 review 列表
-
-```bash
-npx ltsql-review list
-```
-
-输出格式：
-
-```text
-<review-id>    <status>    <title>    <repo-root>
-```
-
-### 查看评论
-
-普通文本输出：
-
-```bash
-npx ltsql-review comments --review CR-20260529-6683
-```
-
-JSON 输出：
-
-```bash
-npx ltsql-review comments --review CR-20260529-6683 --json
-```
-
-## API 评论示例
-
-创建一条文件行评论：
-
-```bash
-curl -sS -X POST "http://localhost:5173/api/reviews/CR-20260529-6683/comments" \
-  -H 'content-type: application/json' \
-  --data '{
-    "author": "winterloo",
-    "body": "这里需要确认兼容性影响。",
-    "filePath": "src/example.sql",
-    "lineStart": 42,
-    "side": "new"
-  }'
-```
-
-查询评论：
-
-```bash
-curl -sS "http://localhost:5173/api/reviews/CR-20260529-6683/comments"
-```
-
-## Build / Check / Test
-
-类型和 Svelte 检查：
-
-```bash
-npm run check
-```
-
-运行测试：
-
-```bash
-npm test
-```
-
-生产构建：
-
-```bash
-npm run build
-```
-
-构建 CLI 运行产物：
+Build the CLI entry points:
 
 ```bash
 npm run build:cli
 ```
 
-生成可复制到 `ltsql` 的免安装部署包：
+This creates:
+
+```text
+dist-cli/reviewctl.js      # primary CLI
+dist-cli/ltsql-review.js   # compatibility alias
+```
+
+## Storage and environment
+
+By default, ReviewLoop stores data in:
+
+```text
+~/.review-platform
+```
+
+The storage directory contains the SQLite DB and immutable artifacts:
+
+```text
+reviews.db
+artifacts/<review-id>/v1/
+```
+
+Recommended generic environment variables:
+
+```bash
+export REVIEW_PLATFORM_HOME="$HOME/.review-platform"
+export REVIEW_PLATFORM_BASE_URL="http://localhost:5173"
+```
+
+For deployed/public links and agent notifications:
+
+```bash
+export REVIEW_PLATFORM_PUBLIC_URL="https://reviewloop.example.com"
+export REVIEW_PLATFORM_DISCORD_CHANNEL_ID="..."
+export REVIEW_PLATFORM_DISCORD_THREAD_ID="..."
+export REVIEW_PLATFORM_EXECUTOR_MENTION="..."
+export REVIEW_PLATFORM_GATEWAY_NOTIFY_URL="..."
+export REVIEW_PLATFORM_GATEWAY_TOKEN="..."
+```
+
+Gateway aliases are also supported:
+
+```bash
+export REVIEW_PLATFORM_HERMES_GATEWAY_NOTIFY_URL="..."
+export REVIEW_PLATFORM_HERMES_GATEWAY_TOKEN="..."
+```
+
+Compatibility aliases still work for older deployments:
+
+```bash
+export LTSQL_REVIEW_HOME="/path/to/review-home"
+export LTSQL_REVIEW_BASE_URL="http://localhost:5173"
+export LTSQL_REVIEW_PUBLIC_URL="http://localhost:5173"
+export LTSQL_REVIEW_DISCORD_CHANNEL_ID="..."
+export LTSQL_REVIEW_DISCORD_THREAD_ID="..."
+export LTSQL_REVIEW_EXECUTOR_MENTION="..."
+export LTSQL_REVIEW_HERMES_GATEWAY_NOTIFY_URL="..."
+export LTSQL_REVIEW_HERMES_GATEWAY_TOKEN="..."
+```
+
+Generic `REVIEW_PLATFORM_*` variables take precedence over `LTSQL_REVIEW_*` compatibility variables.
+
+## Start the Web UI
+
+Development mode:
+
+```bash
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Then open:
+
+```text
+http://localhost:5173/reviews
+```
+
+For a production build:
+
+```bash
+npm run build
+node build/index.js
+```
+
+## CLI usage
+
+Show help:
+
+```bash
+node dist-cli/reviewctl.js --help
+```
+
+The compatibility alias is equivalent:
+
+```bash
+node dist-cli/ltsql-review.js --help
+```
+
+### Publish a worktree review
+
+Use this for uncommitted changes:
+
+```bash
+node dist-cli/reviewctl.js publish \
+  --repo /path/to/repo \
+  --type worktree \
+  --title "Review local agent changes"
+```
+
+### Publish a staged review
+
+Use this for changes already added with `git add`:
+
+```bash
+node dist-cli/reviewctl.js publish \
+  --repo /path/to/repo \
+  --type staged \
+  --title "Review staged patch"
+```
+
+### Publish a commit range
+
+Use this for a stack of local commits:
+
+```bash
+node dist-cli/reviewctl.js publish \
+  --repo /path/to/repo \
+  --range "origin/main..HEAD" \
+  --title "Review agent commit range"
+```
+
+### Publish a single commit/ref
+
+Use this for a specific commit or ref:
+
+```bash
+node dist-cli/reviewctl.js publish \
+  --repo /path/to/repo \
+  --show HEAD \
+  --title "Review latest agent commit"
+```
+
+### Publish a Markdown document review
+
+```bash
+node dist-cli/reviewctl.js publish-doc \
+  --file /path/to/design.md \
+  --title "Review design document"
+```
+
+### Attach an executor notification target
+
+```bash
+node dist-cli/reviewctl.js publish \
+  --repo /path/to/repo \
+  --show HEAD \
+  --title "Review latest agent commit" \
+  --discord-channel "<channel-id>" \
+  --discord-thread "<thread-id>" \
+  --executor-mention "<agent-mention>"
+```
+
+The notification target is stored with the review metadata. Later, the Web UI or API can notify the Gateway with the open comments.
+
+### List reviews
+
+```bash
+node dist-cli/reviewctl.js list
+```
+
+Output format:
+
+```text
+<review-id>    <status>    <title>    <repo-root-or-document-path>
+```
+
+### Read comments as JSON
+
+```bash
+node dist-cli/reviewctl.js comments --review CR-20260615-0324 --json
+```
+
+The JSON response includes the review, latest version, and comments. API responses and Gateway payloads also include generic comment anchors.
+
+### Add an inline comment from CLI
+
+```bash
+node dist-cli/reviewctl.js add-comment \
+  --review CR-20260615-0324 \
+  --file src/example.ts \
+  --line 42 \
+  --side new \
+  --author reviewer \
+  --body "Please simplify this before handing it back to the agent."
+```
+
+## HTTP API
+
+Common endpoints:
+
+```text
+GET  /api/reviews
+GET  /api/reviews/<review-id>
+GET  /api/reviews/<review-id>/files
+GET  /api/reviews/<review-id>/versions/<version>/diff
+GET  /api/reviews/<review-id>/versions/<version>/files/<file-id>/diff
+GET  /api/reviews/<review-id>/comments
+POST /api/reviews/<review-id>/comments
+POST /api/reviews/<review-id>/agent/trigger-comments
+```
+
+Create a line comment:
+
+```bash
+curl -sS -X POST "http://localhost:5173/api/reviews/CR-20260615-0324/comments" \
+  -H 'content-type: application/json' \
+  --data '{
+    "author": "reviewer",
+    "body": "This needs another agent pass.",
+    "filePath": "src/example.ts",
+    "lineStart": 42,
+    "side": "new"
+  }'
+```
+
+Notify the configured Gateway about currently open comments:
+
+```bash
+curl -sS -X POST "http://localhost:5173/api/reviews/CR-20260615-0324/agent/trigger-comments"
+```
+
+Expected notification behavior:
+
+- no open comments: `200` with `No open comments to notify.`;
+- open comments but no Discord target: `409`;
+- Gateway configuration/call failure: sanitized `502`;
+- successful Gateway call: `200`, with the number of comments sent.
+
+## Build, test, and package
+
+Type and Svelte checks:
+
+```bash
+npm run check
+```
+
+Tests:
+
+```bash
+npm test
+```
+
+Production build:
+
+```bash
+npm run build
+```
+
+Build CLI:
+
+```bash
+npm run build:cli
+```
+
+Full package gate:
+
+```bash
+npm run package:review-platform
+```
+
+Compatibility package command:
 
 ```bash
 npm run package:ltsql
 ```
 
-产物路径：
+The current portable tarball path is:
 
 ```text
 dist/ltsql-review-platform.tar.gz
 ```
 
-本地预览生产构建：
+The tarball name and some scripts still keep the historical LTSQL naming for deployment compatibility. The application, CLI, storage model, and environment variables are moving toward the generic ReviewLoop/Review Platform model.
+
+## Deployment notes
+
+The existing LTSQL deployment path is still supported as a compatibility deployment preset:
 
 ```bash
-npm run preview
-```
-
-> 当前项目使用 `@sveltejs/adapter-node`，`npm run build` 会生成可由 `node build` 启动的服务端产物。
-
-## 部署到 ltsql 个人目录
-
-LTSQL worktree 在 `ltsql` 机器的 `/data/ludd50155/...` 下时，review 服务也需要运行在能访问这些路径的机器上。推荐把本地构建好的 tar 包复制到 `ltsql` 个人目录运行，不在 `ltsql` 上执行 `npm install`。
-
-本地构建并上传：
-
-```bash
-cd /home/ldd/projects/ltsql-review-platform
-npm run package:ltsql
-
 scp dist/ltsql-review-platform.tar.gz \
   ltsql:/data/ludd50155/tools/ltsql-review-platform.tar.gz
-```
 
-在 `ltsql` 上解包并启动：
-
-```bash
-ssh ltsql
+ssh ltsql 'set -e
 cd /data/ludd50155/tools
+backup="ltsql-review-platform.backup.$(date +%Y%m%d%H%M%S)"
+[ -d ltsql-review-platform ] && mv ltsql-review-platform "$backup"
 tar -xzf ltsql-review-platform.tar.gz
 cd ltsql-review-platform
-
-export PATH=/data/ludd50155/node-v24.13.0/bin:$PATH
-export LTSQL_REVIEW_HOME=/data/ludd50155/.ltsql-review
-export LTSQL_REVIEW_BASE_URL=http://localhost:5173
-export HOST=127.0.0.1
-export PORT=5173
-
-./start-ltsql-review.sh
+export REVIEW_PLATFORM_HOME=/data/ludd50155/.review-platform
+export REVIEW_PLATFORM_BASE_URL=http://10.20.30.199:2067
+export REVIEW_PLATFORM_PUBLIC_URL=http://10.20.30.199:2067
+export HOST=0.0.0.0
+export PORT=2067
+nohup ./start-ltsql-review.sh > /data/ludd50155/tools/ltsql-review-platform.log 2>&1 &
+'
 ```
 
-如果希望后台运行，可以用：
+Existing deployments may continue using `LTSQL_REVIEW_HOME=/data/ludd50155/.ltsql-review` to keep their old review database and artifacts.
 
-```bash
-nohup ./start-ltsql-review.sh > ltsql-review.log 2>&1 &
-```
+## Recommended human/agent workflow
 
-本地浏览器访问建议走 SSH tunnel：
+1. An AI agent or developer changes code or a document.
+2. Publish a ReviewLoop snapshot with `reviewctl publish` or `reviewctl publish-doc`.
+3. Human opens the review URL and leaves anchored comments.
+4. Inspect comments through the UI, API, or `reviewctl comments --json`.
+5. Trigger the configured agent/executor notification, or feed the JSON comments into an agent manually.
+6. Agent revises the source work.
+7. Publish a new review snapshot for the revised work.
 
-```bash
-ssh -N -L 5174:127.0.0.1:5173 ltsql
-```
+## Security boundaries
 
-然后打开：
-
-```text
-http://localhost:5174/reviews
-```
-
-在 `ltsql` 上发布真实 worktree review：
-
-```bash
-cd /data/ludd50155/tools/ltsql-review-platform
-export PATH=/data/ludd50155/node-v24.13.0/bin:$PATH
-export LTSQL_REVIEW_HOME=/data/ludd50155/.ltsql-review
-export LTSQL_REVIEW_BASE_URL=http://localhost:5173
-
-node dist-cli/ltsql-review.js publish \
-  --repo /data/ludd50155/ltsql_branches/integration-test-oracle \
-  --type worktree \
-  --title "LTSQL 本地修改评审"
-```
-
-## LTSQL 本地评审推荐流程
-
-1. 在 LTSQL 工作区完成修改。
-2. 按评审对象选择发布方式：
-   - **未提交 worktree 改动**：用 `--type worktree`。
-   - **已提交的一组本地 commit**：用 `--range`，例如 `refs/remotes/git-svn..HEAD`。
-   - **单个合并/最终 commit**：用 `--show <commit>`。
-
-发布未提交 worktree 改动：
-
-   ```bash
-   LTSQL_REVIEW_BASE_URL=http://localhost:5173 \
-   npx ltsql-review publish \
-     --repo /path/to/ltsql-worktree \
-     --type worktree \
-     --title "<任务号> <评审标题>"
-   ```
-
-发布从 SVN base 到当前 HEAD 的所有本地 commit：
-
-   ```bash
-   LTSQL_REVIEW_BASE_URL=http://localhost:5173 \
-   npx ltsql-review publish \
-     --repo /data/ludd50155/ltsql_branches/integration-test-oracle \
-     --range "refs/remotes/git-svn..HEAD" \
-     --title "<任务号> 本地提交区间评审"
-   ```
-
-发布某个最终/合并 commit：
-
-   ```bash
-   LTSQL_REVIEW_BASE_URL=http://localhost:5173 \
-   npx ltsql-review publish \
-     --repo /data/ludd50155/ltsql_branches/integration-test-oracle \
-     --show HEAD \
-     --title "<任务号> final commit 评审"
-   ```
-
-3. 打开输出的 URL，在浏览器查看 diff。
-4. 通过 Web/API 记录 review comments。
-5. 根据 comments 修改源仓库代码。
-6. 重新 publish 一个新的 review 快照，或在确认后进入本地 commit 流程。
-
-## 安全边界
-
-- 平台不会写入被 review 的 Git 源仓库。
-- diff snapshot 存放在 `LTSQL_REVIEW_HOME`/`~/.ltsql-review` 下。
-- 不要把包含敏感信息的 diff 发布到共享环境；如果 diff 中含凭证、token、密码等，应先在源仓库中移除或脱敏。
-- 本项目当前是本地 MVP，Web/API 没有做完整的生产鉴权和权限隔离。
+- ReviewLoop does not write to the source Git repository or document being reviewed.
+- Review snapshots may contain sensitive diff/document content. Do not publish secrets, credentials, tokens, or private customer data to shared environments.
+- Gateway tokens and API keys must come from environment/configuration, not source code.
+- Server errors returned from Gateway notification paths are sanitized before they are exposed to the client.
+- This project is still a local/private review tool; the Web/API layer does not yet provide full multi-tenant production authentication or authorization.
