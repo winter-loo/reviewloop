@@ -1,7 +1,7 @@
 <script lang="ts">
 	import ReviewHero from '$lib/components/review/ReviewHero.svelte';
 
-	let { data } = $props();
+	let { data, form } = $props();
 
 	type ReviewComment = {
 		id: string;
@@ -23,19 +23,22 @@
 		lineStart: number;
 		lineEnd: number;
 		html: string;
+		headingLevel: number | null;
+		headingText: string | null;
 	};
-
-	let comments = $state<ReviewComment[]>([]);
-	let commentAuthor = $state('reviewer');
-	let activeLine = $state<number | null>(null);
-	let commentBody = $state('');
-	let commentError = $state<string | null>(null);
-	let commentSubmitting = $state(false);
 
 	const markdownPath = $derived(data.document.path as string);
 	const renderedBlocks = $derived((data.renderedBlocks as RenderedMarkdownBlock[]) ?? []);
 	const lineCount = $derived((data.document.lineCount as number) ?? 0);
+	const comments = $derived((data.comments as ReviewComment[]) ?? []);
+	const activeLine = $derived(((form as { activeLine?: number | null } | null | undefined)?.activeLine) ?? ((data as typeof data & { activeLine?: number | null }).activeLine) ?? null);
+	const formError = $derived(((form as { formError?: string | null } | null | undefined)?.formError) ?? null);
 	const openComments = $derived(comments.filter((comment) => comment.status === 'open'));
+	const sectionLinks = $derived(renderedBlocks.filter(hasHeading));
+
+	function hasHeading(block: RenderedMarkdownBlock): block is RenderedMarkdownBlock & { headingLevel: number; headingText: string } {
+		return Boolean(block.headingText && block.headingLevel);
+	}
 
 	function lineRangeLabel(block: RenderedMarkdownBlock) {
 		return block.lineStart === block.lineEnd ? String(block.lineStart) : `${block.lineStart}-${block.lineEnd}`;
@@ -45,57 +48,72 @@
 		return openComments.filter((comment) => comment.filePath === markdownPath && comment.side === 'new' && comment.lineStart === line);
 	}
 
-	function startComment(line: number) {
-		activeLine = line;
-		commentBody = '';
-		commentError = null;
+	function formatCommentTime(timestamp: string) {
+		return new Date(timestamp).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 	}
-
-	function cancelComment() {
-		activeLine = null;
-		commentBody = '';
-		commentError = null;
-	}
-
-	async function submitComment(line: number) {
-		commentError = null;
-		const body = commentBody.trim();
-		if (!body) {
-			commentError = 'Comment body is required.';
-			return;
-		}
-		commentSubmitting = true;
-		try {
-			const response = await fetch(`/api/reviews/${data.review.id}/comments`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					filePath: markdownPath,
-					side: 'new',
-					lineStart: line,
-					lineEnd: line,
-					body,
-					author: commentAuthor.trim() || 'reviewer'
-				})
-			});
-			if (!response.ok) throw new Error(await response.text());
-			const payload = (await response.json()) as { comment: ReviewComment };
-			comments = [...comments, payload.comment];
-			cancelComment();
-		} catch (cause) {
-			commentError = cause instanceof Error ? cause.message : 'Unable to add comment';
-		} finally {
-			commentSubmitting = false;
-		}
-	}
-
-	$effect(() => {
-		comments = [...(data.comments as ReviewComment[])];
-	});
 </script>
 
 <svelte:head>
 	<title>{data.review.id} · Document Review</title>
+	<script>
+		(() => {
+			const startSectionNavigation = () => {
+				const activateSection = (sectionId) => {
+					const links = document.querySelectorAll('.section-navigation a[data-section-link]');
+					links.forEach((link) => {
+						const isCurrent = link.dataset.sectionLink === sectionId;
+						link.classList.toggle('current', isCurrent);
+						if (isCurrent) {
+							link.setAttribute('aria-current', 'location');
+							link.scrollIntoView({ block: 'nearest' });
+						} else {
+							link.removeAttribute('aria-current');
+						}
+					});
+				};
+
+				const sectionAnchors = [...document.querySelectorAll('[data-section-anchor]')];
+				if (sectionAnchors.length === 0) return;
+
+				const activateFromHash = () => {
+					const targetId = location.hash.slice(1);
+					if (!targetId) {
+						activateSection(sectionAnchors[0].dataset.sectionAnchor);
+						return;
+					}
+
+					const target = document.getElementById(targetId);
+					const targetLine = Number(target?.dataset.lineStart);
+					const current = sectionAnchors
+						.filter((anchor) => Number(anchor.dataset.lineStart) <= targetLine)
+						.at(-1);
+					activateSection(current?.dataset.sectionAnchor ?? targetId);
+				};
+
+				const observer = new IntersectionObserver(
+					(entries) => {
+						const visible = entries
+							.filter((entry) => entry.isIntersecting)
+							.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+						if (visible?.target instanceof HTMLElement) {
+							activateSection(visible.target.dataset.sectionAnchor);
+						}
+					},
+					{ rootMargin: '-18% 0px -70% 0px', threshold: 0 }
+				);
+
+				sectionAnchors.forEach((anchor) => observer.observe(anchor));
+				activateFromHash();
+				window.addEventListener('hashchange', activateFromHash);
+			};
+
+			if (document.readyState === 'loading') {
+				document.addEventListener('DOMContentLoaded', startSectionNavigation, { once: true });
+			} else {
+				startSectionNavigation();
+			}
+		})();
+	</script>
 </svelte:head>
 
 <main class="page">
@@ -110,31 +128,52 @@
 	</ReviewHero>
 
 	<section class="review-layout">
+		<aside class="section-navigation" aria-label="Document section navigation">
+			<h2>Sections</h2>
+			{#if sectionLinks.length === 0}
+				<p>No section titles.</p>
+			{:else}
+				<ul>
+					{#each sectionLinks as section (section.id)}
+						<li class:subsection={section.headingLevel > 2}>
+							<a href={`#${section.id}`} data-section-link={section.id}>{section.headingText}</a>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</aside>
+
 		<article class="markdown-card" aria-label="Markdown design document">
-			{#each renderedBlocks as block}
-				<section class="md-block" class:active={activeLine === block.lineStart}>
-					<button class="add-comment" title={`Comment on line ${block.lineStart}`} onclick={() => startComment(block.lineStart)}>+</button>
-					<a class="line-number" href={`#${block.id}`} id={block.id}>{lineRangeLabel(block)}</a>
-					<div class="md-content">{@html block.html}</div>
-				</section>
-				{#each commentsForLine(block.lineStart) as comment}
-					<section class="comment-thread">
-						<strong>{comment.author}</strong>
-						<span>{new Date(comment.createdAt).toLocaleString()}</span>
-						<p>{comment.body}</p>
+			{#each renderedBlocks as block (block.id)}
+				<div class="md-review-item">
+					<section class="md-block" class:active={activeLine === block.lineStart} data-section-anchor={block.headingText ? block.id : undefined} data-line-start={block.lineStart}>
+						<a class="add-comment" href={`?commentLine=${block.lineStart}#${block.id}`} title={`Comment on line ${block.lineStart}`}>+</a>
+						<a class="line-number" href={`#${block.id}`} id={block.id} data-line-start={block.lineStart}>{lineRangeLabel(block)}</a>
+						<div class="md-content">{@html block.html}</div>
 					</section>
-				{/each}
-				{#if activeLine === block.lineStart}
-					<form class="comment-composer" onsubmit={(event) => { event.preventDefault(); void submitComment(block.lineStart); }}>
-						<label>Author <input bind:value={commentAuthor} /></label>
-						<label>Comment on line {block.lineStart}<textarea bind:value={commentBody} rows="4" placeholder="Add a review comment that Hermes can read via comments --json"></textarea></label>
-						{#if commentError}<p class="error">{commentError}</p>{/if}
-						<div class="composer-actions">
-							<button type="submit" disabled={commentSubmitting}>{commentSubmitting ? 'Saving…' : 'Save comment'}</button>
-							<button type="button" class="secondary" onclick={cancelComment}>Cancel</button>
-						</div>
-					</form>
-				{/if}
+					{#each commentsForLine(block.lineStart) as comment (comment.id)}
+						<section class="comment-thread">
+							<strong>{comment.author}</strong>
+							<span>{formatCommentTime(comment.createdAt)}</span>
+							<p>{comment.body}</p>
+						</section>
+					{/each}
+					{#if activeLine === block.lineStart}
+						<form class="comment-composer" method="POST" action={`?/addComment#${block.id}`}>
+							<input type="hidden" name="filePath" value={markdownPath} />
+							<input type="hidden" name="side" value="new" />
+							<input type="hidden" name="lineStart" value={block.lineStart} />
+							<input type="hidden" name="lineEnd" value={block.lineStart} />
+							<label>Author <input name="author" value="reviewer" /></label>
+							<label>Comment on line {block.lineStart}<textarea name="body" rows="4" placeholder="Add a review comment that Hermes can read via comments --json"></textarea></label>
+							{#if formError}<p class="error">{formError}</p>{/if}
+							<div class="composer-actions">
+								<button type="submit">Save comment</button>
+								<a class="secondary" href={`#${block.id}`}>Cancel</a>
+							</div>
+						</form>
+					{/if}
+				</div>
 			{/each}
 		</article>
 
@@ -164,10 +203,12 @@
 		color: #0f172a;
 		font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 	}
+	:global(*) {
+		box-sizing: border-box;
+	}
 	.page {
-		max-width: 1440px;
-		margin: 0 auto;
-		padding: 28px;
+		width: 100%;
+		padding: 16px;
 	}
 	nav a {
 		color: #2563eb;
@@ -184,12 +225,13 @@
 	}
 	.review-layout {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) 320px;
-		gap: 20px;
+		grid-template-columns: minmax(320px, 18vw) minmax(0, 1fr) 340px;
+		gap: 12px;
 		align-items: start;
-		margin-top: 20px;
+		margin-top: 12px;
 	}
 	.markdown-card,
+	.section-navigation,
 	.comment-overview {
 		border: 1px solid #dbe3ef;
 		border-radius: 18px;
@@ -212,6 +254,9 @@
 		background: #f1f5f9;
 	}
 	.add-comment {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		width: 26px;
 		height: 26px;
 		border: 1px solid #cbd5e1;
@@ -219,6 +264,7 @@
 		background: white;
 		color: #2563eb;
 		font-weight: 900;
+		text-decoration: none;
 		cursor: pointer;
 		opacity: 0.35;
 	}
@@ -365,13 +411,15 @@
 	button {
 		font: inherit;
 	}
-	.composer-actions button {
+	.composer-actions button,
+	.composer-actions a {
 		padding: 9px 12px;
 		border: 0;
 		border-radius: 10px;
 		background: #2563eb;
 		color: white;
 		font-weight: 800;
+		text-decoration: none;
 		cursor: pointer;
 	}
 	.composer-actions .secondary {
@@ -388,8 +436,54 @@
 		top: 18px;
 		padding: 18px;
 	}
+	.section-navigation {
+		position: sticky;
+		top: 18px;
+		padding: 16px;
+		max-height: calc(100vh - 36px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		scrollbar-gutter: stable;
+	}
+	.section-navigation h2,
 	.comment-overview h2 {
 		margin-top: 0;
+	}
+	.section-navigation p,
+	.comment-overview p {
+		color: #64748b;
+	}
+	.section-navigation ul {
+		list-style: none;
+		padding: 0;
+		display: grid;
+		gap: 4px;
+	}
+	.section-navigation li {
+		border-radius: 10px;
+	}
+	.section-navigation li.subsection {
+		padding-left: 14px;
+	}
+	.section-navigation a {
+		display: block;
+		padding: 8px 10px;
+		border-radius: 10px;
+		color: #334155;
+		font-weight: 750;
+		line-height: 1.25;
+		text-decoration: none;
+	}
+	.section-navigation a:hover,
+	.section-navigation :global(a.current),
+	.section-navigation :global(a[aria-current='location']) {
+		background: #eff6ff;
+		color: #2563eb;
+	}
+	.section-navigation :global(a.current),
+	.section-navigation :global(a[aria-current='location']) {
+		box-shadow: inset 3px 0 0 #2563eb;
+		font-weight: 850;
 	}
 	.comment-overview ul {
 		list-style: none;
@@ -416,7 +510,8 @@
 		.review-layout {
 			grid-template-columns: 1fr;
 		}
-		.comment-overview {
+		.comment-overview,
+		.section-navigation {
 			position: static;
 		}
 	}

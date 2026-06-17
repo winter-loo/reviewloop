@@ -6,6 +6,8 @@ export interface RenderedMarkdownBlock {
 	lineStart: number;
 	lineEnd: number;
 	html: string;
+	headingLevel: number | null;
+	headingText: string | null;
 }
 
 const markdown = new MarkdownIt({
@@ -40,6 +42,24 @@ function tokenLineRange(tokens: Token[], start: number, end: number) {
 	return { lineStart, lineEnd: Math.max(lineStart, lineEnd) };
 }
 
+function tokenHeading(tokens: Token[], start: number, end: number) {
+	const opening = tokens[start];
+	if (opening.type !== 'heading_open') return { headingLevel: null, headingText: null };
+
+	const level = Number(opening.tag.replace(/^h/, ''));
+	const inline = tokens.slice(start + 1, end + 1).find((token) => token.type === 'inline');
+	const text = (inline?.children ?? [])
+		.filter((token) => token.type !== 'html_inline')
+		.map((token) => token.content)
+		.join('')
+		.trim();
+
+	return {
+		headingLevel: Number.isInteger(level) ? level : null,
+		headingText: text || null
+	};
+}
+
 export function renderMarkdownDocument(source: string): RenderedMarkdownBlock[] {
 	const tokens = markdown.parse(source, {});
 	const blocks: RenderedMarkdownBlock[] = [];
@@ -55,11 +75,14 @@ export function renderMarkdownDocument(source: string): RenderedMarkdownBlock[] 
 		const end = findMatchingBlockEnd(tokens, index);
 		const group = tokens.slice(index, end + 1);
 		const { lineStart, lineEnd } = tokenLineRange(tokens, index, end);
+		const { headingLevel, headingText } = tokenHeading(tokens, index, end);
 		blocks.push({
 			id: `L${lineStart}`,
 			lineStart,
 			lineEnd,
-			html: markdown.renderer.render(group, markdown.options, {})
+			html: markdown.renderer.render(group, markdown.options, {}),
+			headingLevel,
+			headingText
 		});
 		index = end + 1;
 	}
