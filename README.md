@@ -385,6 +385,10 @@ The tarball name and some scripts still keep the historical LTSQL naming for dep
 
 ## Deployment notes
 
+Detailed deployment records:
+
+- [deeloo.cn ReviewLoop deployment for the cash-in-system research document](./docs/deployments/deeloo-cn-cash-in-system-research.md)
+
 The existing LTSQL deployment path is still supported as a compatibility deployment preset:
 
 ```bash
