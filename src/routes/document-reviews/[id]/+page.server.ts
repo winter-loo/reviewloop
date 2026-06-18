@@ -20,7 +20,7 @@ export const load: PageServerLoad = ({ params, url }) => {
 	const renderedBlocks = renderMarkdownDocument(detail.markdown);
 	const requestedLine = Number(url.searchParams.get('commentLine'));
 	const activeLine = Number.isInteger(requestedLine) && requestedLine > 0 ? requestedLine : null;
-	return { ...detail, renderedBlocks, comments, activeLine, formError: null };
+	return { ...detail, renderedBlocks, comments, activeLine, formError: null, formErrorKey: null };
 };
 
 export const actions: Actions = {
@@ -39,11 +39,11 @@ export const actions: Actions = {
 		const lineEnd = form.get('lineEnd') === null ? lineStart : Number(form.get('lineEnd'));
 		const author = String(form.get('author') ?? 'reviewer').trim() || 'reviewer';
 
-		if (!body) return fail(400, { activeLine: lineStart, formError: 'Comment body is required.' });
-		if (!filePath) return fail(400, { activeLine: lineStart, formError: 'filePath is required for inline review comments.' });
-		if (side !== 'old' && side !== 'new') return fail(400, { activeLine: lineStart, formError: 'side must be old or new for inline review comments.' });
-		if (!Number.isInteger(lineStart) || lineStart < 1) return fail(400, { activeLine: null, formError: 'lineStart must be a positive integer.' });
-		if (!Number.isInteger(lineEnd) || lineEnd < lineStart) return fail(400, { activeLine: lineStart, formError: 'lineEnd must be greater than or equal to lineStart.' });
+		if (!body) return fail(400, { activeLine: lineStart, formErrorKey: 'error.commentBodyRequired' });
+		if (!filePath) return fail(400, { activeLine: lineStart, formErrorKey: 'error.filePathRequired' });
+		if (side !== 'old' && side !== 'new') return fail(400, { activeLine: lineStart, formErrorKey: 'error.sideInvalid' });
+		if (!Number.isInteger(lineStart) || lineStart < 1) return fail(400, { activeLine: null, formErrorKey: 'error.lineStartInvalid' });
+		if (!Number.isInteger(lineEnd) || lineEnd < lineStart) return fail(400, { activeLine: lineStart, formErrorKey: 'error.lineEndInvalid' });
 
 		const now = new Date().toISOString();
 		store.addComment({

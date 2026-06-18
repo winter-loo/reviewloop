@@ -24,7 +24,7 @@ describe('document review page markup', () => {
 	it('renders a left sidebar section-title navigation from markdown headings', () => {
 		expect(pageSource).toContain('const sectionLinks = $derived(renderedBlocks.filter(hasHeading));');
 		expect(pageSource).toContain('<aside class="section-navigation" aria-label="Document section navigation">');
-		expect(pageSource).toContain('<h2>Sections</h2>');
+		expect(pageSource).toContain("<h2>{t('document.sections')}</h2>");
 		expect(pageSource).toContain('{#each sectionLinks as section (section.id)}');
 		expect(pageSource).toContain('href={`#${section.id}`}');
 		expect(pageSource).toContain('{section.headingText}');

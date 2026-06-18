@@ -1,15 +1,20 @@
+<script lang="ts">
+	import { createTranslator } from '$lib/i18n/translate';
+	import type { Locale } from '$lib/i18n/locales';
+
+	let { data } = $props();
+	const t = $derived(createTranslator((data as { locale: Locale }).locale));
+</script>
+
 <svelte:head>
-	<title>LTSQL Review Platform</title>
+	<title>{t('app.title')}</title>
 </svelte:head>
 
 <main class="hero">
-	<p class="eyebrow">LTSQL local review</p>
-	<h1>Publish local worktree diffs without pushing shared mainline.</h1>
-	<p>
-		Create safe, durable, browser-readable review snapshots from local LTSQL worktrees, commits,
-		or ranges. Review comments are persisted separately from source worktrees.
-	</p>
-	<a href="/reviews">Open reviews</a>
+	<p class="eyebrow">{t('home.eyebrow')}</p>
+	<h1>{t('home.title')}</h1>
+	<p>{t('home.description')}</p>
+	<a href="/reviews">{t('home.openReviews')}</a>
 </main>
 
 <style>

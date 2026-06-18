@@ -1,5 +1,7 @@
 <script lang="ts">
 	import ReviewHero from '$lib/components/review/ReviewHero.svelte';
+	import { createTranslator, type MessageKey } from '$lib/i18n/translate';
+	import type { Locale } from '$lib/i18n/locales';
 
 	let { data, form } = $props();
 
@@ -35,6 +37,8 @@
 	const formError = $derived(((form as { formError?: string | null } | null | undefined)?.formError) ?? null);
 	const openComments = $derived(comments.filter((comment) => comment.status === 'open'));
 	const sectionLinks = $derived(renderedBlocks.filter(hasHeading));
+	const formErrorKey = $derived(((form as { formErrorKey?: MessageKey | null } | null | undefined)?.formErrorKey) ?? null);
+	const t = $derived(createTranslator((data as typeof data & { locale: Locale }).locale));
 
 	function hasHeading(block: RenderedMarkdownBlock): block is RenderedMarkdownBlock & { headingLevel: number; headingText: string } {
 		return Boolean(block.headingText && block.headingLevel);
@@ -42,6 +46,10 @@
 
 	function lineRangeLabel(block: RenderedMarkdownBlock) {
 		return block.lineStart === block.lineEnd ? String(block.lineStart) : `${block.lineStart}-${block.lineEnd}`;
+	}
+
+	function lineLabel(line: number | null) {
+		return t('line.one', { line: line ?? '' });
 	}
 
 	function commentsForLine(line: number) {
@@ -54,7 +62,7 @@
 </script>
 
 <svelte:head>
-	<title>{data.review.id} · Document Review</title>
+	<title>{t('review.documentTitle', { id: data.review.id })}</title>
 	<script>
 		(() => {
 			const startSectionNavigation = () => {
@@ -117,21 +125,21 @@
 </svelte:head>
 
 <main class="page">
-	<nav><a href="/reviews">← Reviews</a></nav>
+	<nav><a href="/reviews">{t('review.backToReviews')}</a></nav>
 	<ReviewHero
-		eyebrow={`${data.review.id} · markdown document review`}
+		eyebrow={t('review.markdownEyebrow', { id: data.review.id })}
 		title={data.review.title}
-		meta={[`v${data.latestVersion.version}`, `${lineCount} lines`, `${openComments.length} open comments`]}
+		meta={[t('review.meta.version', { version: data.latestVersion.version }), t('review.meta.lines', { count: lineCount }), t('review.meta.openComments', { count: openComments.length })]}
 		codeText={markdownPath}
 	>
-		<p class="hint">Comments are persisted through the shared review comment API/CLI, so agents can read them with <code>reviewctl comments --review {data.review.id} --json</code>.</p>
+		<p class="hint">{t('document.agentHint')} <code>reviewctl comments --review {data.review.id} --json</code>.</p>
 	</ReviewHero>
 
 	<section class="review-layout">
 		<aside class="section-navigation" aria-label="Document section navigation">
-			<h2>Sections</h2>
+			<h2>{t('document.sections')}</h2>
 			{#if sectionLinks.length === 0}
-				<p>No section titles.</p>
+				<p>{t('document.noSections')}</p>
 			{:else}
 				<ul>
 					{#each sectionLinks as section (section.id)}
@@ -147,7 +155,7 @@
 			{#each renderedBlocks as block (block.id)}
 				<div class="md-review-item">
 					<section class="md-block" class:active={activeLine === block.lineStart} data-section-anchor={block.headingText ? block.id : undefined} data-line-start={block.lineStart}>
-						<a class="add-comment" href={`?commentLine=${block.lineStart}#${block.id}`} title={`Comment on line ${block.lineStart}`}>+</a>
+						<a class="add-comment" href={`?commentLine=${block.lineStart}#${block.id}`} title={t('comment.onLine', { line: block.lineStart })}>+</a>
 						<a class="line-number" href={`#${block.id}`} id={block.id} data-line-start={block.lineStart}>{lineRangeLabel(block)}</a>
 						<div class="md-content">{@html block.html}</div>
 					</section>
@@ -164,12 +172,12 @@
 							<input type="hidden" name="side" value="new" />
 							<input type="hidden" name="lineStart" value={block.lineStart} />
 							<input type="hidden" name="lineEnd" value={block.lineStart} />
-							<label>Author <input name="author" value="reviewer" /></label>
-							<label>Comment on line {block.lineStart}<textarea name="body" rows="4" placeholder="Add a review comment that Hermes can read via comments --json"></textarea></label>
-							{#if formError}<p class="error">{formError}</p>{/if}
+							<label>{t('comment.author')} <input name="author" value="reviewer" /></label>
+							<label>{t('comment.onLine', { line: block.lineStart })}<textarea name="body" rows="4" placeholder={t('comment.placeholder')}></textarea></label>
+							{#if formErrorKey}<p class="error">{t(formErrorKey)}</p>{:else if formError}<p class="error">{formError}</p>{/if}
 							<div class="composer-actions">
-								<button type="submit">Save comment</button>
-								<a class="secondary" href={`#${block.id}`}>Cancel</a>
+								<button type="submit">{t('comment.save')}</button>
+								<a class="secondary" href={`#${block.id}`}>{t('common.cancel')}</a>
 							</div>
 						</form>
 					{/if}
@@ -178,14 +186,14 @@
 		</article>
 
 		<aside class="comment-overview">
-			<h2>Open comments</h2>
+			<h2>{t('document.openComments')}</h2>
 			{#if openComments.length === 0}
-				<p>No comments yet.</p>
+				<p>{t('document.noComments')}</p>
 			{:else}
 				<ul>
 					{#each openComments as comment}
 						<li>
-							<a href={`#L${comment.lineStart}`}>Line {comment.lineStart}</a>
+							<a href={`#L${comment.lineStart}`}>{lineLabel(comment.lineStart)}</a>
 							<strong>{comment.author}</strong>
 							<span>{comment.body}</span>
 						</li>
