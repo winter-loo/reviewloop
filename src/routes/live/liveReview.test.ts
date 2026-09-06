@@ -1,11 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, writeFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { _pathFromToken } from './[token]/+page.server';
+import { _pathFromToken, _pathsFromToken, load } from './[token]/+page.server';
+import { GET as getImage } from './[token]/image/+server';
 
 const cli = fileURLToPath(new URL('../../../bin/review.js', import.meta.url));
 const fixture = fileURLToPath(new URL('../../../README.md', import.meta.url));
+
+// 1x1 transparent PNG buffer
+const DUMMY_PNG = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+	'base64'
+);
 
 describe('standalone live review URL', () => {
 	it('round-trips the original path and rejects a modified token', () => {
@@ -18,4 +25,149 @@ describe('standalone live review URL', () => {
 		expect(_pathFromToken(token, secret)).toBe(realpathSync(fixture));
 		expect(() => _pathFromToken(`${token}x`, secret)).toThrow();
 	});
+
+	it('supports single image file and loads image review mode', () => {
+		const secret = 'test-secret-image-1';
+		const imgPath = '/tmp/live-test-img-single.png';
+		writeFileSync(imgPath, DUMMY_PNG);
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [imgPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(imgPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'image',
+				token
+			});
+			expect((pageData as any).images).toHaveLength(1);
+			expect((pageData as any).images[0].filename).toBe('live-test-img-single.png');
+			expect((pageData as any).images[0].src).toBe(`/live/${token}/image?index=0`);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(imgPath); } catch {}
+		}
+	});
+
+	it('supports multiple image files and serves them via image endpoint', async () => {
+		const secret = 'test-secret-multi';
+		const img1 = '/tmp/live-test-multi-1.png';
+		const img2 = '/tmp/live-test-multi-2.png';
+		writeFileSync(img1, DUMMY_PNG);
+		writeFileSync(img2, DUMMY_PNG);
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [img1, img2], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(img1), realpathSync(img2)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'image',
+				token
+			});
+			const images = (pageData as any).images;
+			expect(images).toHaveLength(2);
+			expect(images[0].filename).toBe('live-test-multi-1.png');
+			expect(images[1].filename).toBe('live-test-multi-2.png');
+			expect(images[0].src).toBe(`/live/${token}/image?index=0`);
+			expect(images[1].src).toBe(`/live/${token}/image?index=1`);
+
+			// Test image server route GET
+			const res0 = await getImage({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/image?index=0`)
+			} as any);
+			expect(res0.status).toBe(200);
+			expect(res0.headers.get('content-type')).toBe('image/png');
+			const buffer0 = Buffer.from(await res0.arrayBuffer());
+			expect(buffer0.equals(DUMMY_PNG)).toBe(true);
+
+			const res1 = await getImage({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/image?index=1`)
+			} as any);
+			expect(res1.status).toBe(200);
+			expect(res1.headers.get('content-type')).toBe('image/png');
+
+			// Invalid index returns 404
+			expect(() =>
+				getImage({
+					params: { token },
+					url: new URL(`https://example.com/live/${token}/image?index=99`)
+				} as any)
+			).toThrow();
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(img1); } catch {}
+			try { unlinkSync(img2); } catch {}
+		}
+	});
+
+	it('rejects images exceeding 5 MiB', () => {
+		const secret = 'test-secret-oversized';
+		const oversizedImg = '/tmp/live-test-oversized.png';
+		// Create a file slightly larger than 5 MiB (5 * 1024 * 1024 + 10 bytes)
+		const bigBuffer = Buffer.alloc(5 * 1024 * 1024 + 10);
+		writeFileSync(oversizedImg, bigBuffer);
+
+		try {
+			// CLI should reject
+			expect(() =>
+				execFileSync(cli, [oversizedImg], {
+					env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+					encoding: 'utf8'
+				})
+			).toThrow(/Image must be no larger than 5 MiB/);
+		} finally {
+			try { unlinkSync(oversizedImg); } catch {}
+		}
+	});
+
+	it('generates short URL by default and long token with --long flag', () => {
+		const secret = 'test-secret-short';
+		const shortUrl = execFileSync(cli, [fixture], {
+			env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+			encoding: 'utf8'
+		}).trim();
+		const shortId = shortUrl.split('/').at(-1)!;
+		// Short ID should be 8 base64url characters
+		expect(shortId.length).toBeLessThanOrEqual(10);
+		expect(_pathFromToken(shortId, secret)).toBe(realpathSync(fixture));
+
+		const longUrl = execFileSync(cli, ['--long', fixture], {
+			env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+			encoding: 'utf8'
+		}).trim();
+		const longToken = longUrl.split('/').at(-1)!;
+		expect(longToken.length).toBeGreaterThan(50);
+		expect(_pathFromToken(longToken, secret)).toBe(realpathSync(fixture));
+	});
 });
+
+

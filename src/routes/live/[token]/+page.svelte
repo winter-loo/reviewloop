@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import LiveImageReview from '$lib/components/review/LiveImageReview.svelte';
+	import type { RenderedMarkdownBlock } from '$lib/server/markdown/render';
 
 	let { data } = $props();
 
-	type Block = (typeof data.renderedBlocks)[number];
 	type Anchor = {
 		blockId: string;
 		startOffset: number;
@@ -25,6 +26,7 @@
 	let storageKey = '';
 
 	onMount(() => {
+		if (data.kind === 'image') return;
 		storageKey = `reviewloop:${location.pathname}`;
 		try {
 			const stored = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
@@ -68,7 +70,7 @@
 	}
 
 	function captureSelection() {
-		if (!annotationMode) return;
+		if (data.kind === 'image' || !annotationMode) return;
 		clearTimeout(selectionTimer);
 		// iOS emits selectionchange while a handle is moving. Never open the modal here: its
 		// backdrop would intercept the next drag and make the whole page look disabled.
@@ -85,7 +87,8 @@
 				selectionCandidate = null;
 				return;
 			}
-			const block = data.renderedBlocks.find((candidate: Block) => candidate.id === startContent.dataset.blockId);
+			const renderedBlocks = data.kind === 'markdown' ? data.renderedBlocks : [];
+			const block = renderedBlocks.find((candidate: RenderedMarkdownBlock) => candidate.id === startContent.dataset.blockId);
 			if (!block) {
 				selectionCandidate = null;
 				return;
@@ -160,8 +163,9 @@
 	}
 
 	function shareText(items: Annotation[]) {
+		const filename = data.kind === 'markdown' ? data.filename : 'review';
 		return [
-			`Review: ${data.filename}`,
+			`Review: ${filename}`,
 			location.href,
 			'',
 			...items.flatMap((item, index) => [`${index + 1}. “${item.selectedText}”`, item.body, ''])
@@ -171,9 +175,10 @@
 	async function share(items = annotations) {
 		if (!items.length) return;
 		const text = shareText(items);
+		const filename = data.kind === 'markdown' ? data.filename : 'review';
 		try {
 			if (navigator.share) {
-				await navigator.share({ title: `${data.filename} 标注`, text });
+				await navigator.share({ title: `${filename} 标注`, text });
 				showNotice('已打开分享面板');
 			} else {
 				await navigator.clipboard.writeText(text);
@@ -194,6 +199,7 @@
 	}
 
 	function renderHighlights() {
+		if (data.kind === 'image') return;
 		if (!document.getElementById('live-review-highlight-style')) {
 			const style = document.createElement('style');
 			style.id = 'live-review-highlight-style';
@@ -214,66 +220,71 @@
 	}
 
 	$effect(() => {
-		annotations;
-		queueMicrotask(renderHighlights);
+		if (data.kind !== 'image') {
+			annotations;
+			queueMicrotask(renderHighlights);
+		}
 	});
 </script>
 
 <svelte:document onselectionchange={captureSelection} />
 
 <svelte:head>
-	<title>{data.filename} · Live Review</title>
+	<title>{data.kind === 'markdown' ? data.filename : (data.images[0]?.filename ?? '图片评审')} · Live Review</title>
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<header>
-	<div class="file-meta">
-		<strong>{data.filename}</strong>
-		<span>{data.lineCount} 行 · 实时读取本地原文件</span>
-	</div>
-	<div class="toolbar">
-		<button
-			class:active={annotationMode}
-			type="button"
-			aria-pressed={annotationMode}
-			onclick={() => {
-				annotationMode = !annotationMode;
-				if (!annotationMode) {
-					selectionCandidate = null;
-					closeComposer();
-				}
-			}}
-		>{annotationMode ? '完成' : '标注'}</button>
-		{#if annotations.length}<button class="primary" type="button" onclick={() => void share()}>分享 {annotations.length} 条</button>{/if}
-	</div>
-</header>
-
-{#if annotationMode}
-	<div class="annotation-hint" role="status">长按选择文字，调整好范围后点“添加批注”</div>
-{/if}
-{#if notice}<div class="notice" role="status">{notice}</div>{/if}
-
-<main class:annotating={annotationMode}>
-	{#each data.renderedBlocks as block (block.id)}
-		<div class="review-block">
-			<!-- Safe: server-side markdown-it disables embedded HTML. -->
-			<section class="md-content" data-block-id={block.id}>{@html block.html}</section>
-			{#each annotationsForBlock(block.id) as annotation (annotation.id)}
-				<article class="annotation-card">
-					<blockquote>{annotation.selectedText}</blockquote>
-					<p>{annotation.body}</p>
-					<button type="button" aria-label="删除标注" onclick={() => removeAnnotation(annotation.id)}>删除</button>
-				</article>
-			{/each}
+{#if data.kind === 'image'}
+	<LiveImageReview {data} />
+{:else}
+	<header>
+		<div class="file-meta">
+			<strong>{data.filename}</strong>
+			<span>{data.lineCount} 行 · 实时读取本地原文件</span>
 		</div>
-	{/each}
-</main>
+		<div class="toolbar">
+			<button
+				class:active={annotationMode}
+				type="button"
+				aria-pressed={annotationMode}
+				onclick={() => {
+					annotationMode = !annotationMode;
+					if (!annotationMode) {
+						selectionCandidate = null;
+						closeComposer();
+					}
+				}}
+			>{annotationMode ? '完成' : '标注'}</button>
+			{#if annotations.length}<button class="primary" type="button" onclick={() => void share()}>分享 {annotations.length} 条</button>{/if}
+		</div>
+	</header>
 
-{#if selectionCandidate && !draft}
-	<button class="selection-action primary" type="button" onclick={openComposer}>
-		添加批注 · {selectionCandidate.selectedText}
-	</button>
-{/if}
+	{#if annotationMode}
+		<div class="annotation-hint" role="status">长按选择文字，调整好范围后点“添加批注”</div>
+	{/if}
+	{#if notice}<div class="notice" role="status">{notice}</div>{/if}
+
+	<main class:annotating={annotationMode}>
+		{#each data.renderedBlocks as block (block.id)}
+			<div class="review-block">
+				<!-- Safe: server-side markdown-it disables embedded HTML. -->
+				<section class="md-content" data-block-id={block.id}>{@html block.html}</section>
+				{#each annotationsForBlock(block.id) as annotation (annotation.id)}
+					<article class="annotation-card">
+						<blockquote>{annotation.selectedText}</blockquote>
+						<p>{annotation.body}</p>
+						<button type="button" aria-label="删除标注" onclick={() => removeAnnotation(annotation.id)}>删除</button>
+					</article>
+				{/each}
+			</div>
+		{/each}
+	</main>
+
+	{#if selectionCandidate && !draft}
+		<button class="selection-action primary" type="button" onclick={openComposer}>
+			添加批注 · {selectionCandidate.selectedText}
+		</button>
+	{/if}
 
 {#if draft}
 	<button class="backdrop" type="button" aria-label="关闭批注输入框" onclick={closeComposer}></button>
@@ -288,6 +299,7 @@
 			<button class="primary" type="button" disabled={!draftBody.trim()} onclick={() => void saveAndShare()}>保存并分享</button>
 		</div>
 	</div>
+{/if}
 {/if}
 
 <style>

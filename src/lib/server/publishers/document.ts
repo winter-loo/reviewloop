@@ -5,7 +5,11 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 	'.png': 'image/png',
 	'.jpg': 'image/jpeg',
 	'.jpeg': 'image/jpeg',
-	'.webp': 'image/webp'
+	'.webp': 'image/webp',
+	'.gif': 'image/gif',
+	'.svg': 'image/svg+xml',
+	'.bmp': 'image/bmp',
+	'.avif': 'image/avif'
 };
 
 export type DocumentReviewSource = {
