@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { formatFileSize } from '$lib/review/fileSize';
 
 	interface Props {
 		data: {
@@ -63,6 +64,12 @@
 	let drawingCanvas = $state<HTMLCanvasElement | null>(null);
 
 	// Zoom state
+	// A US Letter .docx page is 816px wide; on a 402px phone the fit ratio is
+	// ~0.45, so the floor has to sit below that or the page cannot fit at all.
+	const MIN_ZOOM = 0.25;
+	const MAX_ZOOM = 2.0;
+	const STAGE_PADDING_X = 16; // keep in sync with .word-stage padding
+
 	let zoom = $state(1);
 
 	// Annotations state
@@ -148,6 +155,8 @@
 
 			isLoading = false;
 			await tick();
+			fitToWidth();
+			await tick();
 			syncCanvasSize();
 			renderHighlights();
 		} catch (err: any) {
@@ -155,6 +164,19 @@
 			isLoading = false;
 			loadError = err?.message || '无法解析该 Word 文件，可能格式不兼容或损坏';
 		}
+	}
+
+	/**
+	 * A .docx page has a fixed width (816px for US Letter), which overflows any
+	 * phone viewport. Scale it down to fit on first render so the document is
+	 * readable without horizontal scrolling; the zoom controls still override.
+	 */
+	function fitToWidth() {
+		if (!docContainer || !scrollContainer) return;
+		const docWidth = docContainer.scrollWidth;
+		const available = scrollContainer.clientWidth - STAGE_PADDING_X * 2;
+		if (docWidth <= 0 || available <= 0 || docWidth <= available) return;
+		zoom = Math.max(MIN_ZOOM, Math.floor((available / docWidth) * 100) / 100);
 	}
 
 	function handleResize() {
@@ -526,7 +548,7 @@
 			<span class="file-icon">📝</span>
 			<div class="file-text">
 				<strong class="file-name" title={data.filename}>{data.filename}</strong>
-				<span class="file-sub">Word 文档 · {(data.size / 1024 / 1024).toFixed(2)} MB</span>
+				<span class="file-sub">Word 文档 · {formatFileSize(data.size)}</span>
 			</div>
 		</div>
 
@@ -536,8 +558,8 @@
 				<button
 					type="button"
 					class="zoom-btn"
-					onclick={() => (zoom = Math.max(0.5, +(zoom - 0.15).toFixed(2)))}
-					disabled={zoom <= 0.5}
+					onclick={() => (zoom = Math.max(MIN_ZOOM, +(zoom - 0.15).toFixed(2)))}
+					disabled={zoom <= MIN_ZOOM}
 					title="缩小"
 				>
 					-
@@ -546,14 +568,21 @@
 				<button
 					type="button"
 					class="zoom-btn"
-					onclick={() => (zoom = Math.min(2.0, +(zoom + 0.15).toFixed(2)))}
-					disabled={zoom >= 2.0}
+					onclick={() => (zoom = Math.min(MAX_ZOOM, +(zoom + 0.15).toFixed(2)))}
+					disabled={zoom >= MAX_ZOOM}
 					title="放大"
 				>
 					+
 				</button>
-				<button type="button" class="zoom-reset" onclick={() => (zoom = 1)}>重置</button>
-			</div>
+					<button
+						type="button"
+						class="zoom-reset"
+						onclick={() => {
+							zoom = 1;
+							fitToWidth();
+						}}>重置</button
+					>
+				</div>
 		</div>
 
 		<!-- Right Actions Toolbar -->
@@ -667,10 +696,10 @@
 			</div>
 		{/if}
 
-		<div
-			class="word-document-wrapper"
-			style="transform: scale({zoom}); transform-origin: top center;"
-		>
+		<!-- CSS zoom, not transform: scale(). A transform leaves the layout box
+		     at full width, so the scroll extent never shrinks and a scaled-down
+		     page still overflows its container. zoom scales layout too. -->
+		<div class="word-document-wrapper" style:zoom={zoom}>
 			<!-- Docx-preview Output Container -->
 			<div
 				bind:this={docContainer}
@@ -939,11 +968,17 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
+		/* The filename is the one thing allowed to give way when space runs
+		   short; every control keeps its intrinsic width (see flex-shrink: 0
+		   below), otherwise flex squeezes the button labels to one glyph per
+		   line and they render as vertical strips of text. */
 		min-width: 0;
+		flex: 1 1 auto;
 	}
 
 	.file-icon {
 		font-size: 20px;
+		flex-shrink: 0;
 	}
 
 	.file-text {
@@ -964,12 +999,20 @@
 	.file-sub {
 		font-size: 11px;
 		color: #a1a1aa;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	/* Center Zoom */
 	.center-controls {
 		display: flex;
 		align-items: center;
+		flex-shrink: 0;
+	}
+
+	.word-header button {
+		white-space: nowrap;
 	}
 
 	.zoom-pill {
@@ -1028,6 +1071,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		flex-shrink: 0;
 	}
 
 	.brush-palette {
@@ -1143,24 +1187,26 @@
 		background: #18181b;
 		display: flex;
 		flex-direction: column;
-		align-items: center;
+		/* "safe" matters: a plain center pushes an item wider than the container
+		   to a negative offset, and browsers cannot scroll into negative
+		   overflow, so the left edge of the page became unreachable. safe center
+		   falls back to flex-start once the item stops fitting. */
+		align-items: safe center;
 		padding: 30px 16px;
 	}
 
 	.word-document-wrapper {
 		position: relative;
-		max-width: 100%;
 		display: flex;
 		flex-direction: column;
-		align-items: center;
-		transition: transform 0.15s ease-out;
+		align-items: safe center;
 	}
 
 	.docx-render-container {
 		position: relative;
 		display: flex;
 		flex-direction: column;
-		align-items: center;
+		align-items: safe center;
 	}
 
 	.docx-render-container.brush-active {
@@ -1650,8 +1696,32 @@
 		.btn-label-desktop {
 			display: none;
 		}
+		/* One 56px row cannot hold the filename plus every control on a phone,
+		   so let the header grow into rows: the file identity takes the first
+		   row, the controls the second, and the controls scroll sideways rather
+		   than compress if they still do not fit. */
+		.word-header {
+			height: auto;
+			flex-wrap: wrap;
+			align-items: flex-start;
+			row-gap: 8px;
+			padding: 8px 12px;
+		}
+		.file-meta {
+			flex: 1 1 100%;
+		}
 		.file-name {
-			max-width: 140px;
+			max-width: none;
+		}
+		.center-controls,
+		.toolbar-actions {
+			max-width: 100%;
+			overflow-x: auto;
+			scrollbar-width: none;
+		}
+		.center-controls::-webkit-scrollbar,
+		.toolbar-actions::-webkit-scrollbar {
+			display: none;
 		}
 	}
 
@@ -1675,7 +1745,7 @@
 			padding: 0 !important;
 		}
 		.word-document-wrapper {
-			transform: none !important;
+			zoom: 1 !important;
 		}
 		:global(section.docx) {
 			box-shadow: none !important;

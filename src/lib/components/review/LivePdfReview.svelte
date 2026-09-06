@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { formatFileSize } from '$lib/review/fileSize';
 
 	interface Props {
 		data: {
@@ -886,7 +887,7 @@
 			<span class="file-icon">📄</span>
 			<div class="file-text">
 				<strong class="file-name" title={data.filename}>{data.filename}</strong>
-				<span class="file-sub">PDF 文档 · {(data.size / 1024 / 1024).toFixed(2)} MB · 共 {totalPages} 页</span>
+				<span class="file-sub">PDF 文档 · {formatFileSize(data.size)} · 共 {totalPages} 页</span>
 			</div>
 		</div>
 
@@ -1318,11 +1319,19 @@
 		flex-shrink: 0;
 	}
 
+	.pdf-header button {
+		white-space: nowrap;
+	}
+
 	.pdf-meta {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		min-width: 0;
+		/* Filename is the only thing allowed to give way; controls keep
+		   their intrinsic width so labels never compress to one glyph
+		   per line and render as vertical strips. */
+		flex: 1 1 auto;
 	}
 
 	.file-icon {
@@ -1347,6 +1356,9 @@
 	.file-sub {
 		font-size: 11px;
 		color: #a1a1aa;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	/* Center Page Nav */
@@ -1354,6 +1366,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		flex-shrink: 0;
 	}
 
 	.page-nav-btn {
@@ -1408,6 +1421,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		flex-shrink: 0;
 	}
 
 	.brush-palette {
@@ -2077,8 +2091,32 @@
 		.btn-label-desktop {
 			display: none;
 		}
+		/* One 56px row cannot hold the filename plus every control on a
+		   phone, so let the header grow into rows: file identity on the
+		   first, controls on the second, and controls scroll sideways
+		   rather than compress if they still do not fit. */
+		.pdf-header {
+			height: auto;
+			flex-wrap: wrap;
+			align-items: flex-start;
+			row-gap: 8px;
+			padding: 8px 12px;
+		}
+		.pdf-meta {
+			flex: 1 1 100%;
+		}
 		.file-name {
-			max-width: 140px;
+			max-width: none;
+		}
+		.page-nav-controls,
+		.toolbar-actions {
+			max-width: 100%;
+			overflow-x: auto;
+			scrollbar-width: none;
+		}
+		.page-nav-controls::-webkit-scrollbar,
+		.toolbar-actions::-webkit-scrollbar {
+			display: none;
 		}
 	}
 </style>

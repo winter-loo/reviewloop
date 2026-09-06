@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import { formatFileSize } from '$lib/review/fileSize';
 	import * as XLSX from 'xlsx';
 
 	interface Props {
@@ -815,7 +816,7 @@
 					{#if currentSheetData}
 						{currentSheetData.rowCount} 行 × {currentSheetData.colCount} 列 ·
 					{/if}
-					{(data.size / 1024 / 1024).toFixed(2)} MB
+					{formatFileSize(data.size)}
 				</span>
 			</div>
 		</div>
@@ -1406,11 +1407,19 @@
 		gap: 12px;
 	}
 
+	.excel-header button {
+		white-space: nowrap;
+	}
+
 	.file-meta {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		min-width: 0;
+		/* Filename is the only thing allowed to give way; controls keep
+		   their intrinsic width so labels never compress to one glyph
+		   per line and render as vertical strips. */
+		flex: 1 1 auto;
 	}
 
 	.file-icon {
@@ -2497,8 +2506,24 @@
 
 	/* Mobile responsive adjustments */
 	@media (max-width: 768px) {
+		/* Let the header grow into rows instead of crushing its controls. */
 		.excel-header {
 			padding: 8px 12px;
+			height: auto;
+			flex-wrap: wrap;
+			align-items: flex-start;
+			row-gap: 8px;
+		}
+		.file-meta {
+			flex: 1 1 100%;
+		}
+		.header-actions {
+			max-width: 100%;
+			overflow-x: auto;
+			scrollbar-width: none;
+		}
+		.header-actions::-webkit-scrollbar {
+			display: none;
 		}
 
 		.file-name {
