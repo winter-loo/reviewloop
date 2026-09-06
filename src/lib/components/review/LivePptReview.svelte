@@ -56,6 +56,9 @@
 	let slideWidth = $state(960);
 	let slideHeight = $state(540); // default 16:9
 
+	/** Quarter-turn read mode for landscape slides on a portrait screen. */
+	let rotated = $state(false);
+
 	// Annotation mode
 	let annotationMode = $state(false);
 	let brushColor = $state('#ef4444');
@@ -188,8 +191,13 @@
 	}
 
 	function calculateSlideDimensions() {
-		const stageW = stageElement?.clientWidth || window.innerWidth;
-		const stageH = (stageElement?.clientHeight || window.innerHeight) - 40;
+		const viewW = stageElement?.clientWidth || window.innerWidth;
+		const viewH = (stageElement?.clientHeight || window.innerHeight) - 40;
+
+		// When rotated the slide's on-screen footprint has its width and height
+		// swapped, so fit the aspect ratio against a swapped viewport.
+		const stageW = rotated ? viewH : viewW;
+		const stageH = rotated ? viewW : viewH;
 
 		const nativeW = viewer?.slideWidth || 960;
 		const nativeH = viewer?.slideHeight || 540;
@@ -206,6 +214,30 @@
 		slideWidth = Math.max(320, Math.floor(targetW));
 		slideHeight = Math.max(180, Math.floor(targetH));
 	}
+
+	/**
+	 * A 16:9 slide fitted into a portrait phone fills about a quarter of the
+	 * screen. Turning it a quarter turn fills roughly all of it -- about four
+	 * times the area -- which is the difference between readable and not.
+	 */
+	function toggleRotation() {
+		rotated = !rotated;
+		resetZoom(false);
+		calculateSlideDimensions();
+		tick().then(syncCanvas);
+	}
+
+	/** Only worth offering when turning the slide would actually gain area. */
+	let rotationHelps = $derived.by(() => {
+		void slideWidth;
+		void slideHeight;
+		const viewW = stageElement?.clientWidth || 0;
+		const viewH = (stageElement?.clientHeight || 0) - 40;
+		if (viewW <= 0 || viewH <= 0) return false;
+		const slideAspect = (viewer?.slideWidth || 960) / (viewer?.slideHeight || 540);
+		// Landscape content in a portrait viewport.
+		return slideAspect > 1 && viewH > viewW;
+	});
 
 	function handleResize() {
 		calculateSlideDimensions();
@@ -562,8 +594,22 @@
 		if (!target) return null;
 		const rect = target.getBoundingClientRect();
 		if (rect.width === 0 || rect.height === 0) return null;
-		const x = (e.clientX - rect.left) / rect.width;
-		const y = (e.clientY - rect.top) / rect.height;
+
+		let x: number;
+		let y: number;
+		if (rotated) {
+			// getBoundingClientRect() is axis-aligned, so under rotate(90deg) it
+			// describes the turned footprint and its axes no longer match the
+			// slide's. Invert the quarter turn: slide (0,0) lands at the top
+			// right of that box, so screen Y drives slide X and screen X drives
+			// slide Y backwards.
+			x = (e.clientY - rect.top) / rect.height;
+			y = 1 - (e.clientX - rect.left) / rect.width;
+		} else {
+			x = (e.clientX - rect.left) / rect.width;
+			y = (e.clientY - rect.top) / rect.height;
+		}
+
 		return {
 			x: Math.max(0, Math.min(1, x)),
 			y: Math.max(0, Math.min(1, y))
@@ -929,6 +975,19 @@
 				</div>
 			{/if}
 
+			{#if rotationHelps}
+				<button
+					class="tool-btn"
+					class:active={rotated}
+					type="button"
+					onclick={toggleRotation}
+					title={rotated ? '恢复正向显示' : '横向显示，充分利用竖屏空间'}
+				>
+					<span class="btn-icon">⟳</span>
+					<span class="btn-label-desktop">{rotated ? '恢复方向' : '横向铺满'}</span>
+				</button>
+			{/if}
+
 			<button
 				class="tool-btn"
 				class:active={annotationMode}
@@ -989,7 +1048,9 @@
 			class="slide-viewport-wrapper"
 			class:animating={isAnimating}
 			bind:this={wrapperElement}
-			style="transform: translate3d({panX}px, {panY}px, 0) scale({zoom}); width: {slideWidth}px; height: {slideHeight}px;"
+			style="transform: translate3d({panX}px, {panY}px, 0) scale({zoom}){rotated
+				? ' rotate(90deg)'
+				: ''}; width: {slideWidth}px; height: {slideHeight}px;"
 		>
 			<!-- PptxViewer Mount Container -->
 			<div
@@ -1057,7 +1118,7 @@
 		</div>
 
 		<!-- Nav Arrows -->
-		{#if currentIndex > 0}
+		{#if currentIndex > 0 && !annotationMode}
 			<button
 				type="button"
 				class="nav-arrow left"
@@ -1067,7 +1128,7 @@
 				‹
 			</button>
 		{/if}
-		{#if currentIndex < totalSlides - 1}
+		{#if currentIndex < totalSlides - 1 && !annotationMode}
 			<button
 				type="button"
 				class="nav-arrow right"
@@ -1503,6 +1564,11 @@
 	.slide-viewport-wrapper {
 		position: relative;
 		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+		/* .ppt-stage is a flex row, so a slide laid out wider than the stage
+		   gets shrunk back to the stage width. That is exactly the rotated
+		   case: the slide is sized against the swapped viewport and is meant
+		   to overflow horizontally before the rotation turns it upright. */
+		flex-shrink: 0;
 		transform-origin: center center;
 		will-change: transform;
 		background: #ffffff;
@@ -2033,6 +2099,12 @@
 
 	@media (max-width: 640px) {
 		.btn-label-desktop {
+			display: none;
+		}
+		/* The floating edge arrows overlap the page on a narrow screen and
+		   there is nothing to gain from them: the header carries prev/next
+		   and a horizontal swipe already changes page. */
+		.nav-arrow {
 			display: none;
 		}
 		/* One 56px row cannot hold the filename plus every control on a

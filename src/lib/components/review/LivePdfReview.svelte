@@ -1109,7 +1109,7 @@
 			</div>
 
 			<!-- Nav Arrows on Left/Right Edges -->
-			{#if currentIndex > 0}
+			{#if currentIndex > 0 && !annotationMode}
 				<button
 					type="button"
 					class="nav-arrow left"
@@ -1119,7 +1119,7 @@
 					‹
 				</button>
 			{/if}
-			{#if currentIndex < totalPages - 1}
+			{#if currentIndex < totalPages - 1 && !annotationMode}
 				<button
 					type="button"
 					class="nav-arrow right"
@@ -2089,6 +2089,12 @@
 
 	@media (max-width: 640px) {
 		.btn-label-desktop {
+			display: none;
+		}
+		/* The floating edge arrows overlap the page on a narrow screen and
+		   there is nothing to gain from them: the header carries prev/next
+		   and a horizontal swipe already changes page. */
+		.nav-arrow {
 			display: none;
 		}
 		/* One 56px row cannot hold the filename plus every control on a
