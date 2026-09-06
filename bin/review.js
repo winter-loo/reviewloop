@@ -10,7 +10,9 @@ const BASE_URL = process.env.ONLINE_REVIEW_BASE_URL || 'https://deeloo.cn/live';
 const MAX_MARKDOWN_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
+const MAX_WORD_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif']);
+const WORD_EXTENSIONS = new Set(['.docx', '.doc']);
 
 function isImageFile(filePath) {
 	return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -22,6 +24,10 @@ function isMarkdownFile(filePath) {
 
 function isPdfFile(filePath) {
 	return path.extname(filePath).toLowerCase() === '.pdf';
+}
+
+function isWordFile(filePath) {
+	return WORD_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function getShortLinksDb() {
@@ -120,6 +126,8 @@ function main() {
 			if (stats.size > MAX_MARKDOWN_BYTES) throw new Error(`Markdown file must be no larger than 5 MiB: ${file}`);
 		} else if (isPdfFile(file)) {
 			if (stats.size > MAX_PDF_BYTES) throw new Error(`PDF file must be no larger than 50 MiB: ${file}`);
+		} else if (isWordFile(file)) {
+			if (stats.size > MAX_WORD_BYTES) throw new Error(`Word file must be no larger than 50 MiB: ${file}`);
 		} else {
 			throw new Error(`Unsupported file type: ${file}`);
 		}
@@ -128,9 +136,10 @@ function main() {
 	const allImagesMode = files.every(isImageFile);
 	const isMarkdownMode = files.length === 1 && isMarkdownFile(files[0]);
 	const isPdfMode = files.length === 1 && isPdfFile(files[0]);
+	const isWordMode = files.length === 1 && isWordFile(files[0]);
 
-	if (!allImagesMode && !isMarkdownMode && !isPdfMode) {
-		throw new Error('Only Markdown, PDF, or Image files are supported');
+	if (!allImagesMode && !isMarkdownMode && !isPdfMode && !isWordMode) {
+		throw new Error('Only Markdown, PDF, Word, or Image files are supported');
 	}
 
 	const payload = files.length === 1 ? files[0] : JSON.stringify(files);

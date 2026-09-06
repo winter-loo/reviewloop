@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { _pathFromToken, _pathsFromToken, load } from './[token]/+page.server';
 import { GET as getImage } from './[token]/image/+server';
 import { GET as getPdf } from './[token]/pdf/+server';
+import { GET as getWord } from './[token]/word/+server';
+import JSZip from 'jszip';
 
 const cli = fileURLToPath(new URL('../../../bin/review.js', import.meta.url));
 const fixture = fileURLToPath(new URL('../../../README.md', import.meta.url));
@@ -217,6 +219,57 @@ describe('standalone live review URL', () => {
 		} finally {
 			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
 			try { unlinkSync(pdfPath); } catch {}
+		}
+	});
+
+	it('supports single Word (.docx) file and serves it via word endpoint', async () => {
+		const secret = 'test-secret-word';
+		const docxPath = '/tmp/live-test-doc.docx';
+		const zip = new JSZip();
+		zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+		zip.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+		zip.file('word/document.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello ReviewLoop Word Test</w:t></w:r></w:p></w:body></w:document>');
+		const minimalDocx = await zip.generateAsync({ type: 'nodebuffer' });
+		writeFileSync(docxPath, minimalDocx);
+
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [docxPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(docxPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'word',
+				token,
+				filename: 'live-test-doc.docx',
+				src: `/live/${token}/word`
+			});
+
+			// Test word server route GET
+			const res = await getWord({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/word`)
+			} as any);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+			const buffer = Buffer.from(await res.arrayBuffer());
+			expect(buffer.equals(minimalDocx)).toBe(true);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(docxPath); } catch {}
 		}
 	});
 });

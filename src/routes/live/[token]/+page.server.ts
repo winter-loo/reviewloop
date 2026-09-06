@@ -22,6 +22,11 @@ export function _isPdfFile(filePath: string) {
 	return path.extname(filePath).toLowerCase() === '.pdf';
 }
 
+const WORD_EXTENSIONS = new Set(['.docx', '.doc']);
+export function _isWordFile(filePath: string) {
+	return WORD_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
 export function _pathFromToken(token: string, secret: string) {
 	const resolvedToken = resolveToken(token);
 	const payload = Buffer.from(resolvedToken, 'base64url');
@@ -83,12 +88,27 @@ export const load: PageServerLoad = ({ params, setHeaders }) => {
 	const allImages = resolvedPaths.every(_isImageFile);
 	const isMarkdown = resolvedPaths.length === 1 && _isMarkdownFile(resolvedPaths[0]);
 	const isPdf = resolvedPaths.length === 1 && _isPdfFile(resolvedPaths[0]);
+	const isWord = resolvedPaths.length === 1 && _isWordFile(resolvedPaths[0]);
 
-	if (!allImages && !isMarkdown && !isPdf) {
+	if (!allImages && !isMarkdown && !isPdf && !isWord) {
 		throw error(403, 'Unsupported file type');
 	}
 
 	setHeaders({ 'cache-control': 'no-store' });
+
+	if (isWord) {
+		const resolved = resolvedPaths[0];
+		const stats = statSync(resolved);
+		if (stats.size > 50 * 1024 * 1024) throw error(413, 'Word document exceeds 50 MiB');
+		return {
+			kind: 'word' as const,
+			token: params.token,
+			filename: path.basename(resolved),
+			size: stats.size,
+			updatedAt: stats.mtime.toISOString(),
+			src: `/live/${params.token}/word`
+		};
+	}
 
 	if (isPdf) {
 		const resolved = resolvedPaths[0];

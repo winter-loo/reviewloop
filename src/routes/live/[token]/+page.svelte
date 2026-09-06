@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import LiveImageReview from '$lib/components/review/LiveImageReview.svelte';
 	import LivePdfReview from '$lib/components/review/LivePdfReview.svelte';
+	import LiveWordReview from '$lib/components/review/LiveWordReview.svelte';
 	import type { RenderedMarkdownBlock } from '$lib/server/markdown/render';
 
 	let { data } = $props();
@@ -231,7 +232,7 @@
 <svelte:document onselectionchange={captureSelection} />
 
 <svelte:head>
-	<title>{data.kind === 'markdown' ? data.filename : data.kind === 'pdf' ? data.filename : (data.images[0]?.filename ?? '图片评审')} · Live Review</title>
+	<title>{data.kind === 'markdown' ? data.filename : data.kind === 'pdf' || data.kind === 'word' ? data.filename : (data.images[0]?.filename ?? '图片评审')} · Live Review</title>
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
@@ -239,6 +240,8 @@
 	<LiveImageReview {data} />
 {:else if data.kind === 'pdf'}
 	<LivePdfReview {data} />
+{:else if data.kind === 'word'}
+	<LiveWordReview {data} />
 {:else}
 	<header>
 		<div class="file-meta">
