@@ -56,6 +56,8 @@
 		value: any;
 		formatted: string;
 		formula?: string;
+		/** Formula cell whose result was never cached in the file. */
+		uncachedFormula: boolean;
 		type: string;
 		rowspan: number;
 		colspan: number;
@@ -69,6 +71,7 @@
 		colHeaders: string[];
 		rowHeaders: number[];
 		rows: GridCell[][];
+		uncachedFormulaCount: number;
 	};
 
 	const BRUSH_COLORS = [
@@ -321,19 +324,32 @@
 				let rawValue: any = '';
 				let cellType = 's';
 				let formula: string | undefined;
+				let uncachedFormula = false;
 
 				if (cell) {
-					rawValue = cell.v ?? '';
 					cellType = cell.t || 's';
-					if (cell.w !== undefined) {
-						formatted = cell.w;
-					} else if (cell.v instanceof Date) {
-						formatted = cell.v.toLocaleDateString();
-					} else if (cell.v !== undefined && cell.v !== null) {
-						formatted = String(cell.v);
-					}
 					if (cell.f) {
 						formula = `=${cell.f}`;
+					}
+
+					// 'z' is SheetJS's blank/stub type. A formula cell whose result
+					// was never cached in the file arrives as {t:'z', f:'SUM(..)',
+					// v:0} -- that 0 is synthesised, not the formula's value. We do
+					// not evaluate formulas, so rendering it would show a reviewer a
+					// number the spreadsheet never contained. Leave the cell empty
+					// and flag it instead.
+					const isBlankStub = cellType === 'z';
+					uncachedFormula = Boolean(formula) && isBlankStub;
+
+					if (!isBlankStub) {
+						rawValue = cell.v ?? '';
+						if (cell.w !== undefined) {
+							formatted = cell.w;
+						} else if (cell.v instanceof Date) {
+							formatted = cell.v.toLocaleDateString();
+						} else if (cell.v !== undefined && cell.v !== null) {
+							formatted = String(cell.v);
+						}
 					}
 				}
 
@@ -344,6 +360,7 @@
 					value: rawValue,
 					formatted,
 					formula,
+					uncachedFormula,
 					type: cellType,
 					rowspan: mergeInfo?.isOrigin ? mergeInfo.rowspan : 1,
 					colspan: mergeInfo?.isOrigin ? mergeInfo.colspan : 1,
@@ -359,7 +376,11 @@
 			colCount: maxCol - range.s.c + 1,
 			colHeaders,
 			rowHeaders,
-			rows
+			rows,
+			uncachedFormulaCount: rows.reduce(
+				(n, row) => n + row.filter((cell) => cell.uncachedFormula).length,
+				0
+			)
 		};
 
 		// Reset selection
@@ -491,7 +512,11 @@
 	function saveCellAnnotation() {
 		if (!cellDraftBody.trim() || !selectedRange || !activeCell) return;
 
-		const cellValueStr = activeCell.formatted || String(activeCell.value || '');
+		// An uncached formula cell has no value to quote; record the formula so
+		// the comment still carries what the reviewer was looking at.
+		const cellValueStr = activeCell.uncachedFormula
+			? `${activeCell.formula} (未缓存结果)`
+			: activeCell.formatted || String(activeCell.value || '');
 		const newAnn: CellAnnotation = {
 			id: `cell-ann-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
 			type: 'cell',
@@ -924,6 +949,9 @@
 			{#if activeCell}
 				{#if activeCell.formula}
 					<span class="formula-val">{activeCell.formula}</span>
+					{#if activeCell.uncachedFormula}
+						<span class="uncached-note">源文件未保存该公式的计算结果</span>
+					{/if}
 				{:else}
 					<span class="cell-val">{activeCell.formatted}</span>
 				{/if}
@@ -951,6 +979,14 @@
 			➕ 批注该区域
 		</button>
 	</div>
+
+	{#if currentSheetData && currentSheetData.uncachedFormulaCount > 0}
+		<div class="uncached-banner" role="status">
+			<span class="uncached-banner-icon">ƒ</span>
+			本表有 <b>{currentSheetData.uncachedFormulaCount}</b> 个公式单元格未显示数值：源文件没有保存公式的计算结果。这些单元格标为
+			<span class="uncached-formula-inline">ƒ</span>，选中可在公式栏查看公式本身。
+		</div>
+	{/if}
 
 	<!-- Main Workspace Area -->
 	<main class="excel-stage">
@@ -1017,7 +1053,15 @@
 												{#if hasComments}
 													<span class="comment-marker-triangle" title="该单元格有批注"></span>
 												{/if}
-												<span class="cell-text">{cell.formatted}</span>
+												{#if cell.uncachedFormula}
+													<span
+														class="uncached-formula"
+														title="该单元格是公式 {cell.formula}，但源文件未保存计算结果，此处不显示数值以免误导"
+														>ƒ</span
+													>
+												{:else}
+													<span class="cell-text">{cell.formatted}</span>
+												{/if}
 											</td>
 										{/if}
 									{/each}
@@ -1135,7 +1179,11 @@
 				<div class="cell-context-box">
 					<div class="ctx-tag">工作表: <b>{activeSheetName}</b> · 区域: <b>{selectedRange.ref}</b></div>
 					<div class="ctx-val">
-						当前值: <code>{activeCell.formatted || '(空)'}</code>
+						当前值: <code
+							>{activeCell.uncachedFormula
+								? '(源文件未保存计算结果)'
+								: activeCell.formatted || '(空)'}</code
+						>
 						{#if activeCell.formula}
 							<span class="ctx-formula">公式: {activeCell.formula}</span>
 						{/if}
@@ -1892,6 +1940,48 @@
 	}
 
 	/* Drawing Canvas Layer */
+	/* Uncached formula cells: no value exists in the file, so show a marker
+	   rather than a number the spreadsheet never contained. */
+	.uncached-formula {
+		font-family: 'Cambria Math', 'Times New Roman', Georgia, serif;
+		font-style: italic;
+		font-size: 13px;
+		color: #b45309;
+		opacity: 0.75;
+		cursor: help;
+	}
+
+	.uncached-banner {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 8px 14px;
+		background: #fffbeb;
+		border-bottom: 1px solid #fde68a;
+		color: #78350f;
+		font-size: 12.5px;
+		line-height: 1.5;
+	}
+
+	.uncached-banner b {
+		font-weight: 700;
+	}
+
+	.uncached-banner-icon,
+	.uncached-formula-inline {
+		font-family: 'Cambria Math', 'Times New Roman', Georgia, serif;
+		font-style: italic;
+		color: #b45309;
+		font-size: 14px;
+	}
+
+	.uncached-note {
+		margin-left: 10px;
+		font-size: 11.5px;
+		color: #b45309;
+		white-space: nowrap;
+	}
+
 	.drawing-canvas-layer {
 		position: absolute;
 		top: 0;
