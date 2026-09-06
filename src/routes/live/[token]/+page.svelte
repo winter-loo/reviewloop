@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import LiveImageReview from '$lib/components/review/LiveImageReview.svelte';
+	import LivePdfReview from '$lib/components/review/LivePdfReview.svelte';
 	import type { RenderedMarkdownBlock } from '$lib/server/markdown/render';
 
 	let { data } = $props();
@@ -26,7 +27,7 @@
 	let storageKey = '';
 
 	onMount(() => {
-		if (data.kind === 'image') return;
+		if (data.kind !== 'markdown') return;
 		storageKey = `reviewloop:${location.pathname}`;
 		try {
 			const stored = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
@@ -70,7 +71,7 @@
 	}
 
 	function captureSelection() {
-		if (data.kind === 'image' || !annotationMode) return;
+		if (data.kind !== 'markdown' || !annotationMode) return;
 		clearTimeout(selectionTimer);
 		// iOS emits selectionchange while a handle is moving. Never open the modal here: its
 		// backdrop would intercept the next drag and make the whole page look disabled.
@@ -106,18 +107,22 @@
 				startOffset,
 				endOffset,
 				selectedText,
-				prefix: text.slice(Math.max(0, startOffset - 64), startOffset),
-				suffix: text.slice(endOffset, endOffset + 64)
+				prefix: text.slice(Math.max(0, startOffset - 32), startOffset),
+				suffix: text.slice(endOffset, endOffset + 32)
 			};
-		}, 240);
+		}, 120);
 	}
 
 	function openComposer() {
 		if (!selectionCandidate) return;
-		clearTimeout(selectionTimer);
 		draft = selectionCandidate;
-		selectionCandidate = null;
 		draftBody = '';
+	}
+
+	function closeComposer() {
+		draft = null;
+		draftBody = '';
+		selectionCandidate = null;
 		window.getSelection()?.removeAllRanges();
 	}
 
@@ -134,27 +139,23 @@
 	function showNotice(message: string) {
 		notice = message;
 		clearTimeout(noticeTimer);
-		noticeTimer = setTimeout(() => (notice = ''), 2400);
-	}
-
-	function closeComposer() {
-		draft = null;
-		draftBody = '';
-		window.getSelection()?.removeAllRanges();
+		noticeTimer = setTimeout(() => {
+			notice = '';
+		}, 2400);
 	}
 
 	function saveDraft() {
 		if (!draft || !draftBody.trim()) return null;
-		const annotation: Annotation = {
-			...draft,
+		const next: Annotation = {
 			id: crypto.randomUUID(),
+			...draft,
 			body: draftBody.trim(),
 			createdAt: new Date().toISOString()
 		};
-		persist([...annotations, annotation]);
+		persist([...annotations, next]);
 		closeComposer();
 		showNotice('已保存到这台设备');
-		return annotation;
+		return next;
 	}
 
 	function removeAnnotation(id: string) {
@@ -199,7 +200,7 @@
 	}
 
 	function renderHighlights() {
-		if (data.kind === 'image') return;
+		if (data.kind !== 'markdown') return;
 		if (!document.getElementById('live-review-highlight-style')) {
 			const style = document.createElement('style');
 			style.id = 'live-review-highlight-style';
@@ -220,7 +221,7 @@
 	}
 
 	$effect(() => {
-		if (data.kind !== 'image') {
+		if (data.kind === 'markdown') {
 			annotations;
 			queueMicrotask(renderHighlights);
 		}
@@ -230,12 +231,14 @@
 <svelte:document onselectionchange={captureSelection} />
 
 <svelte:head>
-	<title>{data.kind === 'markdown' ? data.filename : (data.images[0]?.filename ?? '图片评审')} · Live Review</title>
+	<title>{data.kind === 'markdown' ? data.filename : data.kind === 'pdf' ? data.filename : (data.images[0]?.filename ?? '图片评审')} · Live Review</title>
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
 {#if data.kind === 'image'}
 	<LiveImageReview {data} />
+{:else if data.kind === 'pdf'}
+	<LivePdfReview {data} />
 {:else}
 	<header>
 		<div class="file-meta">

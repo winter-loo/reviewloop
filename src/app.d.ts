@@ -12,4 +12,10 @@ declare global {
 	}
 }
 
+declare module 'pdfjs-dist/build/pdf.min.mjs' {
+	const content: any;
+	export default content;
+	export * from 'pdfjs-dist';
+}
+
 export {};

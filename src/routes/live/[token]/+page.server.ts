@@ -18,6 +18,10 @@ export function _isMarkdownFile(filePath: string) {
 	return path.extname(filePath).toLowerCase() === '.md';
 }
 
+export function _isPdfFile(filePath: string) {
+	return path.extname(filePath).toLowerCase() === '.pdf';
+}
+
 export function _pathFromToken(token: string, secret: string) {
 	const resolvedToken = resolveToken(token);
 	const payload = Buffer.from(resolvedToken, 'base64url');
@@ -78,12 +82,27 @@ export const load: PageServerLoad = ({ params, setHeaders }) => {
 
 	const allImages = resolvedPaths.every(_isImageFile);
 	const isMarkdown = resolvedPaths.length === 1 && _isMarkdownFile(resolvedPaths[0]);
+	const isPdf = resolvedPaths.length === 1 && _isPdfFile(resolvedPaths[0]);
 
-	if (!allImages && !isMarkdown) {
-		throw error(403, 'Only Markdown files or Image files are supported');
+	if (!allImages && !isMarkdown && !isPdf) {
+		throw error(403, 'Unsupported file type');
 	}
 
 	setHeaders({ 'cache-control': 'no-store' });
+
+	if (isPdf) {
+		const resolved = resolvedPaths[0];
+		const stats = statSync(resolved);
+		if (stats.size > 50 * 1024 * 1024) throw error(413, 'PDF exceeds 50 MiB');
+		return {
+			kind: 'pdf' as const,
+			token: params.token,
+			filename: path.basename(resolved),
+			size: stats.size,
+			updatedAt: stats.mtime.toISOString(),
+			src: `/live/${params.token}/pdf`
+		};
+	}
 
 	if (isMarkdown) {
 		const resolved = resolvedPaths[0];

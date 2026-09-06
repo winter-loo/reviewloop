@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { _pathFromToken, _pathsFromToken, load } from './[token]/+page.server';
 import { GET as getImage } from './[token]/image/+server';
+import { GET as getPdf } from './[token]/pdf/+server';
 
 const cli = fileURLToPath(new URL('../../../bin/review.js', import.meta.url));
 const fixture = fileURLToPath(new URL('../../../README.md', import.meta.url));
@@ -12,6 +13,11 @@ const fixture = fileURLToPath(new URL('../../../README.md', import.meta.url));
 const DUMMY_PNG = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
 	'base64'
+);
+
+const MINIMAL_PDF = Buffer.from(
+	'%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<<>>>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n0000000108 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n185\n%%EOF\n',
+	'utf8'
 );
 
 describe('standalone live review URL', () => {
@@ -167,6 +173,51 @@ describe('standalone live review URL', () => {
 		const longToken = longUrl.split('/').at(-1)!;
 		expect(longToken.length).toBeGreaterThan(50);
 		expect(_pathFromToken(longToken, secret)).toBe(realpathSync(fixture));
+	});
+
+	it('supports single PDF file and serves it via pdf endpoint', async () => {
+		const secret = 'test-secret-pdf';
+		const pdfPath = '/tmp/live-test-doc.pdf';
+		writeFileSync(pdfPath, MINIMAL_PDF);
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [pdfPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(pdfPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'pdf',
+				token,
+				filename: 'live-test-doc.pdf',
+				src: `/live/${token}/pdf`
+			});
+
+			// Test pdf server route GET
+			const res = await getPdf({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/pdf`)
+			} as any);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toBe('application/pdf');
+			const buffer = Buffer.from(await res.arrayBuffer());
+			expect(buffer.equals(MINIMAL_PDF)).toBe(true);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(pdfPath); } catch {}
+		}
 	});
 });
 

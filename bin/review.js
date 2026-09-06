@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 const BASE_URL = process.env.ONLINE_REVIEW_BASE_URL || 'https://deeloo.cn/live';
 const MAX_MARKDOWN_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif']);
 
 function isImageFile(filePath) {
@@ -17,6 +18,10 @@ function isImageFile(filePath) {
 
 function isMarkdownFile(filePath) {
 	return path.extname(filePath).toLowerCase() === '.md';
+}
+
+function isPdfFile(filePath) {
+	return path.extname(filePath).toLowerCase() === '.pdf';
 }
 
 function getShortLinksDb() {
@@ -113,6 +118,8 @@ function main() {
 			if (stats.size > MAX_IMAGE_BYTES) throw new Error(`Image must be no larger than 5 MiB: ${file}`);
 		} else if (isMarkdownFile(file)) {
 			if (stats.size > MAX_MARKDOWN_BYTES) throw new Error(`Markdown file must be no larger than 5 MiB: ${file}`);
+		} else if (isPdfFile(file)) {
+			if (stats.size > MAX_PDF_BYTES) throw new Error(`PDF file must be no larger than 50 MiB: ${file}`);
 		} else {
 			throw new Error(`Unsupported file type: ${file}`);
 		}
@@ -120,9 +127,10 @@ function main() {
 
 	const allImagesMode = files.every(isImageFile);
 	const isMarkdownMode = files.length === 1 && isMarkdownFile(files[0]);
+	const isPdfMode = files.length === 1 && isPdfFile(files[0]);
 
-	if (!allImagesMode && !isMarkdownMode) {
-		throw new Error('Only Markdown files or Image files are supported');
+	if (!allImagesMode && !isMarkdownMode && !isPdfMode) {
+		throw new Error('Only Markdown, PDF, or Image files are supported');
 	}
 
 	const payload = files.length === 1 ? files[0] : JSON.stringify(files);
