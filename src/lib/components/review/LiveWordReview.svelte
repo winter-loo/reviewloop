@@ -92,6 +92,14 @@
 
 	const storageKey = $derived(`reviewloop:live-word:${data.token}`);
 
+	// The drawing canvas is mounted lazily by {#if brushMode}, so the
+	// syncCanvasSize() call at load time runs while drawingCanvas is still null
+	// and bails out. Re-sync once the element actually exists, otherwise the
+	// canvas keeps its intrinsic 300x150 default.
+	$effect(() => {
+		if (brushMode && drawingCanvas && docContainer) syncCanvasSize();
+	});
+
 	onMount(() => {
 		try {
 			const saved = localStorage.getItem(storageKey);
@@ -155,9 +163,12 @@
 
 	function syncCanvasSize() {
 		if (!drawingCanvas || !docContainer) return;
-		const rect = docContainer.getBoundingClientRect();
-		const w = Math.max(docContainer.scrollWidth, Math.floor(rect.width));
-		const h = Math.max(docContainer.scrollHeight, Math.floor(rect.height));
+		// Use layout sizes only. getBoundingClientRect() is post-transform and
+		// .word-document-wrapper carries a scale({zoom}), so mixing the two
+		// oversizes the canvas whenever zoom !== 1.
+		const w = docContainer.scrollWidth || docContainer.clientWidth;
+		const h = docContainer.scrollHeight || docContainer.clientHeight;
+		if (w === 0 || h === 0) return;
 
 		const dpr = window.devicePixelRatio || 1;
 		drawingCanvas.width = Math.floor(w * dpr);
@@ -1220,6 +1231,10 @@
 		position: absolute;
 		top: 0;
 		left: 0;
+		/* Fallback so the canvas never renders at its intrinsic 300x150 if the
+		   JS sizing pass has not run yet; syncCanvasSize() overrides both. */
+		width: 100%;
+		height: 100%;
 		cursor: crosshair;
 		touch-action: none;
 		z-index: 20;

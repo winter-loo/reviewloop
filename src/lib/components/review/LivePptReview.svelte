@@ -211,6 +211,17 @@
 		syncCanvas();
 	}
 
+	// The drawing canvas is mounted lazily by {#if annotationMode}, so every
+	// syncCanvas() call made while annotation mode is off is a no-op. Re-sync
+	// once the element exists, and whenever the slide is resized underneath it.
+	$effect(() => {
+		if (annotationMode && drawingCanvas) {
+			void slideWidth;
+			void slideHeight;
+			syncCanvas();
+		}
+	});
+
 	function syncCanvas() {
 		if (!drawingCanvas) return;
 		const dpr = window.devicePixelRatio || 1;

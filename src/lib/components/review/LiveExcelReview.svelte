@@ -214,6 +214,7 @@
 
 	let contentWidth = $state(1000);
 	let contentHeight = $state(800);
+	let gridTable = $state<HTMLTableElement | null>(null);
 
 	onMount(() => {
 		try {
@@ -386,14 +387,36 @@
 		syncCanvasDimensions();
 	}
 
+	// Re-measure whenever the rendered sheet or the zoom changes, so the canvas
+	// and the saved-annotation SVG keep matching the grid they sit on top of.
+	$effect(() => {
+		if (!gridTable || !currentSheetData) return;
+		void zoom;
+		syncCanvasDimensions();
+	});
+
 	function syncCanvasDimensions() {
-		if (!tableContainer) return;
-		contentWidth = Math.max(tableContainer.scrollWidth, tableContainer.clientWidth, 900);
-		contentHeight = Math.max(tableContainer.scrollHeight, tableContainer.clientHeight, 600);
+		// Measure the grid table itself. The two obvious alternatives are both
+		// wrong: tableContainer is the scroll viewport (a different box, which
+		// left the canvas overflowing the content by hundreds of px), and
+		// .sheet-content-wrapper also contains the saved-annotation SVG that is
+		// itself sized from contentHeight -- measuring it is circular, so the
+		// value latches at its initial guess and can never shrink.
+		if (!gridTable) return;
+		const w = gridTable.offsetWidth;
+		const h = gridTable.offsetHeight;
+		if (w === 0 || h === 0) return;
+		contentWidth = w;
+		contentHeight = h;
 
 		if (drawingCanvas) {
 			drawingCanvas.width = contentWidth;
 			drawingCanvas.height = contentHeight;
+			// Pin the CSS box too. .sheet-content-wrapper stretches to fill the
+			// scroll viewport, so the width:100% fallback would otherwise leave
+			// the canvas wider than the grid it is meant to overlay.
+			drawingCanvas.style.width = `${contentWidth}px`;
+			drawingCanvas.style.height = `${contentHeight}px`;
 			redrawDraftCanvas();
 		}
 	}
@@ -953,7 +976,7 @@
 					style:zoom="{zoom}"
 				>
 					<!-- The Spreadsheet Grid Table -->
-					<table class="excel-table">
+					<table class="excel-table" bind:this={gridTable}>
 						<thead>
 							<tr>
 								<th class="corner-header"></th>
@@ -1873,6 +1896,10 @@
 		position: absolute;
 		top: 0;
 		left: 0;
+		/* Fallback so the canvas never falls back to its intrinsic 300x150
+		   before the JS sizing pass runs; syncCanvasDimensions() overrides. */
+		width: 100%;
+		height: 100%;
 		pointer-events: none;
 		z-index: 17;
 		cursor: crosshair;

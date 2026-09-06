@@ -181,6 +181,28 @@
 		}
 	}
 
+	// Kept separate from renderCurrentPage() because the drawing canvas is
+	// mounted lazily by {#if annotationMode}: at page-render time it is usually
+	// still null, so it has to be sized again once it appears.
+	function syncDrawingCanvasSize() {
+		if (!drawingCanvasElement) return;
+		const dpr = window.devicePixelRatio || 1;
+		drawingCanvasElement.width = Math.floor(pageViewportWidth * dpr);
+		drawingCanvasElement.height = Math.floor(pageViewportHeight * dpr);
+		drawingCanvasElement.style.width = `${pageViewportWidth}px`;
+		drawingCanvasElement.style.height = `${pageViewportHeight}px`;
+	}
+
+	$effect(() => {
+		if (annotationMode && drawingCanvasElement) {
+			// Track page size so the canvas follows page changes and zoom-to-fit.
+			void pageViewportWidth;
+			void pageViewportHeight;
+			syncDrawingCanvasSize();
+			redrawDraftCanvas();
+		}
+	});
+
 	async function renderCurrentPage() {
 		if (!pdfDoc || !pdfCanvasElement) return;
 
@@ -213,12 +235,7 @@
 			pdfCanvasElement.style.width = `${pageViewportWidth}px`;
 			pdfCanvasElement.style.height = `${pageViewportHeight}px`;
 
-			if (drawingCanvasElement) {
-				drawingCanvasElement.width = Math.floor(viewport.width * dpr);
-				drawingCanvasElement.height = Math.floor(viewport.height * dpr);
-				drawingCanvasElement.style.width = `${pageViewportWidth}px`;
-				drawingCanvasElement.style.height = `${pageViewportHeight}px`;
-			}
+			syncDrawingCanvasSize();
 
 			const ctx = pdfCanvasElement.getContext('2d');
 			if (ctx) {
