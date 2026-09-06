@@ -12,9 +12,11 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const MAX_WORD_BYTES = 50 * 1024 * 1024;
 const MAX_PPT_BYTES = 50 * 1024 * 1024;
+const MAX_EXCEL_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif']);
 const WORD_EXTENSIONS = new Set(['.docx', '.doc']);
 const PPT_EXTENSIONS = new Set(['.pptx', '.ppt']);
+const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.csv']);
 
 function isImageFile(filePath) {
 	return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -34,6 +36,10 @@ function isWordFile(filePath) {
 
 function isPptFile(filePath) {
 	return PPT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isExcelFile(filePath) {
+	return EXCEL_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function getShortLinksDb() {
@@ -136,6 +142,8 @@ function main() {
 			if (stats.size > MAX_WORD_BYTES) throw new Error(`Word file must be no larger than 50 MiB: ${file}`);
 		} else if (isPptFile(file)) {
 			if (stats.size > MAX_PPT_BYTES) throw new Error(`PowerPoint file must be no larger than 50 MiB: ${file}`);
+		} else if (isExcelFile(file)) {
+			if (stats.size > MAX_EXCEL_BYTES) throw new Error(`Excel file must be no larger than 50 MiB: ${file}`);
 		} else {
 			throw new Error(`Unsupported file type: ${file}`);
 		}
@@ -146,9 +154,10 @@ function main() {
 	const isPdfMode = files.length === 1 && isPdfFile(files[0]);
 	const isWordMode = files.length === 1 && isWordFile(files[0]);
 	const isPptMode = files.length === 1 && isPptFile(files[0]);
+	const isExcelMode = files.length === 1 && isExcelFile(files[0]);
 
-	if (!allImagesMode && !isMarkdownMode && !isPdfMode && !isWordMode && !isPptMode) {
-		throw new Error('Only Markdown, PDF, Word, PowerPoint, or Image files are supported');
+	if (!allImagesMode && !isMarkdownMode && !isPdfMode && !isWordMode && !isPptMode && !isExcelMode) {
+		throw new Error('Only Markdown, PDF, Word, PowerPoint, Excel, or Image files are supported');
 	}
 
 	const payload = files.length === 1 ? files[0] : JSON.stringify(files);

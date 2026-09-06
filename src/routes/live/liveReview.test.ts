@@ -7,7 +7,9 @@ import { GET as getImage } from './[token]/image/+server';
 import { GET as getPdf } from './[token]/pdf/+server';
 import { GET as getWord } from './[token]/word/+server';
 import { GET as getPpt } from './[token]/ppt/+server';
+import { GET as getExcel } from './[token]/excel/+server';
 import JSZip from 'jszip';
+import * as XLSX from 'xlsx';
 
 const cli = fileURLToPath(new URL('../../../bin/review.js', import.meta.url));
 const fixture = fileURLToPath(new URL('../../../README.md', import.meta.url));
@@ -345,6 +347,107 @@ describe('standalone live review URL', () => {
 		} finally {
 			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
 			try { unlinkSync(pptxPath); } catch {}
+		}
+	});
+
+	it('supports single Excel (.xlsx) file and serves it via excel endpoint', async () => {
+		const secret = 'test-secret-excel';
+		const xlsxPath = '/tmp/live-test-sheet.xlsx';
+		const wb = XLSX.utils.book_new();
+		const ws = XLSX.utils.aoa_to_sheet([
+			['Quarter', 'Revenue', 'Cost'],
+			['Q1', 12000, 8000],
+			['Q2', 15000, 9500]
+		]);
+		XLSX.utils.book_append_sheet(wb, ws, 'SalesData');
+		const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+		writeFileSync(xlsxPath, buffer);
+
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [xlsxPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(xlsxPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'excel',
+				token,
+				filename: 'live-test-sheet.xlsx',
+				src: `/live/${token}/excel`
+			});
+
+			// Test excel server route GET
+			const res = await getExcel({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/excel`)
+			} as any);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+			const resBuf = Buffer.from(await res.arrayBuffer());
+			expect(resBuf.equals(buffer)).toBe(true);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(xlsxPath); } catch {}
+		}
+	});
+
+	it('supports CSV (.csv) spreadsheet and serves it via excel endpoint', async () => {
+		const secret = 'test-secret-csv';
+		const csvPath = '/tmp/live-test-sheet.csv';
+		const csvContent = 'Item,Price,Quantity\nApple,5,10\nBanana,3,20\n';
+		writeFileSync(csvPath, csvContent, 'utf8');
+
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [csvPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(csvPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'excel',
+				token,
+				filename: 'live-test-sheet.csv',
+				src: `/live/${token}/excel`
+			});
+
+			// Test excel server route GET
+			const res = await getExcel({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/excel`)
+			} as any);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+			const text = Buffer.from(await res.arrayBuffer()).toString('utf8');
+			expect(text).toBe(csvContent);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(csvPath); } catch {}
 		}
 	});
 });

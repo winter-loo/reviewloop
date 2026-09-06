@@ -32,6 +32,11 @@ export function _isPptFile(filePath: string) {
 	return PPT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.csv']);
+export function _isExcelFile(filePath: string) {
+	return EXCEL_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
 export function _pathFromToken(token: string, secret: string) {
 	const resolvedToken = resolveToken(token);
 	const payload = Buffer.from(resolvedToken, 'base64url');
@@ -95,12 +100,27 @@ export const load: PageServerLoad = ({ params, setHeaders }) => {
 	const isPdf = resolvedPaths.length === 1 && _isPdfFile(resolvedPaths[0]);
 	const isWord = resolvedPaths.length === 1 && _isWordFile(resolvedPaths[0]);
 	const isPpt = resolvedPaths.length === 1 && _isPptFile(resolvedPaths[0]);
+	const isExcel = resolvedPaths.length === 1 && _isExcelFile(resolvedPaths[0]);
 
-	if (!allImages && !isMarkdown && !isPdf && !isWord && !isPpt) {
+	if (!allImages && !isMarkdown && !isPdf && !isWord && !isPpt && !isExcel) {
 		throw error(403, 'Unsupported file type');
 	}
 
 	setHeaders({ 'cache-control': 'no-store' });
+
+	if (isExcel) {
+		const resolved = resolvedPaths[0];
+		const stats = statSync(resolved);
+		if (stats.size > 50 * 1024 * 1024) throw error(413, 'Excel spreadsheet exceeds 50 MiB');
+		return {
+			kind: 'excel' as const,
+			token: params.token,
+			filename: path.basename(resolved),
+			size: stats.size,
+			updatedAt: stats.mtime.toISOString(),
+			src: `/live/${params.token}/excel`
+		};
+	}
 
 	if (isPpt) {
 		const resolved = resolvedPaths[0];
