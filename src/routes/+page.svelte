@@ -48,4 +48,21 @@
 		font-weight: 700;
 		text-decoration: none;
 	}
+	@media (max-width: 640px) {
+		.hero {
+			padding: 44px 18px;
+		}
+		h1 {
+			font-size: clamp(2.25rem, 13vw, 3.5rem);
+			overflow-wrap: anywhere;
+		}
+		p {
+			font-size: 1.05rem;
+			line-height: 1.55;
+		}
+		a {
+			min-height: 44px;
+			align-items: center;
+		}
+	}
 </style>

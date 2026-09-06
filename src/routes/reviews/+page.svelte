@@ -79,4 +79,28 @@
 		background: #0f172a;
 		color: #e2e8f0;
 	}
+	@media (max-width: 640px) {
+		.page {
+			padding: 28px 12px;
+		}
+		h1 {
+			font-size: 2rem;
+			line-height: 1.1;
+		}
+		.reviews a,
+		.empty {
+			padding: 14px;
+		}
+		.reviews a {
+			min-height: 44px;
+		}
+		.reviews strong,
+		.reviews span,
+		.reviews code {
+			overflow-wrap: anywhere;
+		}
+		pre {
+			font-size: 0.78rem;
+		}
+	}
 </style>

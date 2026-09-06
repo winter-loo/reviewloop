@@ -24,7 +24,8 @@ describe('SvelteKit i18n wiring', () => {
 		expect(reviewsSource).toContain("t('reviews.title')");
 		expect(documentReviewSource).toContain("t('document.sections')");
 		expect(documentReviewSource).toContain("t('document.openComments')");
-		expect(documentReviewSource).toContain("t('comment.save')");
+		expect(documentReviewSource).toContain("t('comment.addToReview')");
+		expect(documentReviewSource).toContain("t('comment.sendNow')");
 		expect(documentReviewSource).not.toContain('<h2>Sections</h2>');
 		expect(documentReviewSource).not.toContain('<h2>Open comments</h2>');
 		expect(documentReviewSource).not.toContain('Save comment</button>');

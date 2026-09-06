@@ -6,8 +6,20 @@ export interface RenderedMarkdownBlock {
 	lineStart: number;
 	lineEnd: number;
 	html: string;
+	text: string;
 	headingLevel: number | null;
 	headingText: string | null;
+}
+
+function renderedText(html: string) {
+	return html
+		.replace(/<[^>]*>/g, '')
+		.replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+		.replace(/&#x([\da-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+		.replace(/&quot;/g, '"')
+		.replace(/&gt;/g, '>')
+		.replace(/&lt;/g, '<')
+		.replace(/&amp;/g, '&');
 }
 
 const markdown = new MarkdownIt({
@@ -76,11 +88,13 @@ export function renderMarkdownDocument(source: string): RenderedMarkdownBlock[] 
 		const group = tokens.slice(index, end + 1);
 		const { lineStart, lineEnd } = tokenLineRange(tokens, index, end);
 		const { headingLevel, headingText } = tokenHeading(tokens, index, end);
+		const html = markdown.renderer.render(group, markdown.options, {});
 		blocks.push({
 			id: `L${lineStart}`,
 			lineStart,
 			lineEnd,
-			html: markdown.renderer.render(group, markdown.options, {}),
+			html,
+			text: renderedText(html),
 			headingLevel,
 			headingText
 		});

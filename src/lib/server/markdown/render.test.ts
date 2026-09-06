@@ -11,6 +11,7 @@ describe('renderMarkdownDocument', () => {
 			[7, 9]
 		]);
 		expect(blocks[0].html).toContain('<h1>Title</h1>');
+		expect(blocks[0].text).toBe('Title\n');
 		expect(blocks[0]).toMatchObject({ headingLevel: 1, headingText: 'Title' });
 		expect(blocks[1].html).toContain('<table>');
 		expect(blocks[1].headingText).toBeNull();
