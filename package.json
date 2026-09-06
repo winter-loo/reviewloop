@@ -34,6 +34,7 @@
 		"vitest": "^4.1.7"
 	},
 	"dependencies": {
+		"@aiden0z/pptx-renderer": "^1.2.4",
 		"docx-preview": "^0.4.0",
 		"markdown-it": "^14.2.0",
 		"pdfjs-dist": "^6.3.289"

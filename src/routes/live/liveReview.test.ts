@@ -6,6 +6,7 @@ import { _pathFromToken, _pathsFromToken, load } from './[token]/+page.server';
 import { GET as getImage } from './[token]/image/+server';
 import { GET as getPdf } from './[token]/pdf/+server';
 import { GET as getWord } from './[token]/word/+server';
+import { GET as getPpt } from './[token]/ppt/+server';
 import JSZip from 'jszip';
 
 const cli = fileURLToPath(new URL('../../../bin/review.js', import.meta.url));
@@ -270,6 +271,80 @@ describe('standalone live review URL', () => {
 		} finally {
 			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
 			try { unlinkSync(docxPath); } catch {}
+		}
+	});
+
+	it('supports single PowerPoint (.pptx) file and serves it via ppt endpoint', async () => {
+		const secret = 'test-secret-ppt';
+		const pptxPath = '/tmp/live-test-deck.pptx';
+		const zip = new JSZip();
+		zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>`);
+		zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`);
+		zip.file('ppt/presentation.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldMasterIdLst/>
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="5143500"/>
+  <p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`);
+		zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>`);
+		zip.file('ppt/slides/slide1.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p><a:r><a:t>Quarterly Review Deck</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`);
+		const minimalPptx = await zip.generateAsync({ type: 'nodebuffer' });
+		writeFileSync(pptxPath, minimalPptx);
+
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+
+		try {
+			const url = execFileSync(cli, [pptxPath], {
+				env: { ...process.env, ONLINE_REVIEW_URL_SECRET: secret },
+				encoding: 'utf8'
+			}).trim();
+
+			const token = url.split('/').at(-1)!;
+			const paths = _pathsFromToken(token, secret);
+			expect(paths).toEqual([realpathSync(pptxPath)]);
+
+			// Test server load
+			const pageData = load({
+				params: { token },
+				setHeaders: () => {}
+			} as any);
+
+			expect(pageData).toMatchObject({
+				kind: 'ppt',
+				token,
+				filename: 'live-test-deck.pptx',
+				src: `/live/${token}/ppt`
+			});
+
+			// Test ppt server route GET
+			const res = await getPpt({
+				params: { token },
+				url: new URL(`https://example.com/live/${token}/ppt`)
+			} as any);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.presentationml.presentation');
+			const buffer = Buffer.from(await res.arrayBuffer());
+			expect(buffer.equals(minimalPptx)).toBe(true);
+		} finally {
+			process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			try { unlinkSync(pptxPath); } catch {}
 		}
 	});
 });

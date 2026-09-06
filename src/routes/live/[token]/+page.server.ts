@@ -27,6 +27,11 @@ export function _isWordFile(filePath: string) {
 	return WORD_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+const PPT_EXTENSIONS = new Set(['.pptx', '.ppt']);
+export function _isPptFile(filePath: string) {
+	return PPT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
 export function _pathFromToken(token: string, secret: string) {
 	const resolvedToken = resolveToken(token);
 	const payload = Buffer.from(resolvedToken, 'base64url');
@@ -89,12 +94,27 @@ export const load: PageServerLoad = ({ params, setHeaders }) => {
 	const isMarkdown = resolvedPaths.length === 1 && _isMarkdownFile(resolvedPaths[0]);
 	const isPdf = resolvedPaths.length === 1 && _isPdfFile(resolvedPaths[0]);
 	const isWord = resolvedPaths.length === 1 && _isWordFile(resolvedPaths[0]);
+	const isPpt = resolvedPaths.length === 1 && _isPptFile(resolvedPaths[0]);
 
-	if (!allImages && !isMarkdown && !isPdf && !isWord) {
+	if (!allImages && !isMarkdown && !isPdf && !isWord && !isPpt) {
 		throw error(403, 'Unsupported file type');
 	}
 
 	setHeaders({ 'cache-control': 'no-store' });
+
+	if (isPpt) {
+		const resolved = resolvedPaths[0];
+		const stats = statSync(resolved);
+		if (stats.size > 50 * 1024 * 1024) throw error(413, 'PowerPoint presentation exceeds 50 MiB');
+		return {
+			kind: 'ppt' as const,
+			token: params.token,
+			filename: path.basename(resolved),
+			size: stats.size,
+			updatedAt: stats.mtime.toISOString(),
+			src: `/live/${params.token}/ppt`
+		};
+	}
 
 	if (isWord) {
 		const resolved = resolvedPaths[0];
