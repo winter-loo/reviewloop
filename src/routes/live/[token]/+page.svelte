@@ -334,6 +334,7 @@
 	main { width: min(860px, calc(100% - 32px)); margin: 28px auto 80px; padding: 44px 52px; border: 1px solid #e1e1dc; border-radius: 12px; background: white; box-shadow: 0 10px 35px rgba(0, 0, 0, .04); }
 	main.annotating .md-content { cursor: text; user-select: text; -webkit-user-select: text; }
 	.md-content { overflow-wrap: anywhere; }
+	.md-content :global(img) { max-width: 100%; height: auto; }
 	.md-content :global(h1), .md-content :global(h2), .md-content :global(h3) { margin: 1.4em 0 .55em; line-height: 1.2; }
 	.md-content:first-child :global(h1) { margin-top: 0; }
 	.md-content :global(p), .md-content :global(li) { line-height: 1.72; }
