@@ -27,6 +27,8 @@ ReviewLoop provides that control point:
 
 ## What it can review
 
+Repository test fixtures and preview commands are documented in [samples/README.md](samples/README.md).
+
 ### Code reviews
 
 Publish Git changes as review snapshots from:
