@@ -24,3 +24,8 @@ done
 
 原始样例目录和 `output/image-ui-fixtures/` 保留，已有链接仍可使用原路径。
 新测试请使用本目录中的样例，避免依赖用户主目录或临时输出目录。
+
+Legacy Word sample: `documents/reviewloop-prd.doc` is a binary Word 97–2003 copy
+of `reviewloop-prd.docx`, generated with LibreOffice. Preview it with
+`node bin/review.js samples/documents/reviewloop-prd.doc`; the server must have
+LibreOffice Writer installed to convert it for the Word viewer.

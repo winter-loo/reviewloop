@@ -86,6 +86,7 @@ SvelteKit Web UI / HTTP API
 
 - Node.js 24+ / npm
 - Git
+- LibreOffice Writer on the server for legacy `.doc` previews (`.docx` does not require it).
 - A writable review storage directory
 
 ReviewLoop uses Node 24's built-in `node:sqlite`, so the packaged server does not need native SQLite npm addons such as `better-sqlite3` on the deployment machine.
@@ -108,6 +109,23 @@ This creates:
 dist-cli/reviewctl.js      # primary CLI
 dist-cli/ltsql-review.js   # compatibility alias
 ```
+
+### Legacy Word previews
+
+Live reviews accept both `.doc` and `.docx`. For `.doc`, the server converts a
+private copy to `.docx` with LibreOffice, then uses the same Word viewer and
+annotation controls. The original file is never modified. Conversion can change
+layout slightly depending on the fonts installed on the server.
+
+Install LibreOffice Writer on the server (for example, `sudo apt-get install
+libreoffice-writer` on Debian/Ubuntu). The portable application tarball does not
+bundle LibreOffice. If its executable is not on PATH, set
+`REVIEW_PLATFORM_LIBREOFFICE_BIN=/absolute/path/to/soffice`.
+
+The server needs a writable `~/.cache/reviewloop/word-conversions` directory.
+Each conversion uses an isolated profile and is removed after success or failure;
+conversion times out after 60 seconds. Missing LibreOffice produces an explicit
+setup error in the viewer instead of passing binary `.doc` bytes to the `.docx` parser.
 
 ## Storage and environment
 

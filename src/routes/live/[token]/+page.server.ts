@@ -22,7 +22,7 @@ export function _isPdfFile(filePath: string) {
 	return path.extname(filePath).toLowerCase() === '.pdf';
 }
 
-const WORD_EXTENSIONS = new Set(['.docx']);
+const WORD_EXTENSIONS = new Set(['.docx', '.doc']);
 export function _isWordFile(filePath: string) {
 	return WORD_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }

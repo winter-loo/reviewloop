@@ -1,4 +1,3 @@
-import { createCipheriv, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { realpathSync, writeFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -27,24 +26,18 @@ const MINIMAL_PDF = Buffer.from(
 );
 
 describe('standalone live review URL', () => {
-	it('rejects legacy Word files in the CLI, page, and file endpoint', () => {
-		const filePath = '/tmp/live-test-legacy.doc';
+	it('accepts legacy Word documents in the CLI and page', () => {
+		const filePath = fileURLToPath(new URL('../../../samples/documents/reviewloop-prd.doc', import.meta.url));
 		const secret = 'legacy-doc-test';
 		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
-		writeFileSync(filePath, Buffer.from([0xd0, 0xcf, 0x11, 0xe0]));
 		process.env.ONLINE_REVIEW_URL_SECRET = secret;
 		try {
-			expect(() => execFileSync(cli, [filePath], { env: { ...process.env }, stdio: 'pipe' })).toThrow();
-			const iv = Buffer.alloc(12, 1);
-			const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv);
-			const encrypted = Buffer.concat([cipher.update(realpathSync(filePath)), cipher.final()]);
-			const token = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
-			expect(() => load({ params: { token }, setHeaders: () => {} } as any)).toThrow(expect.objectContaining({ status: 403, body: { message: 'Unsupported file type' } }));
-			expect(() => getWord({ params: { token } } as any)).toThrow(expect.objectContaining({ status: 415, body: { message: 'Not a Word document' } }));
+			const url = execFileSync(cli, [filePath], { env: { ...process.env }, encoding: 'utf8' }).trim();
+			const token = url.split('/').at(-1)!;
+			expect(load({ params: { token }, setHeaders: () => {} } as any)).toMatchObject({ kind: 'word', filename: 'reviewloop-prd.doc' });
 		} finally {
 			if (originalSecret === undefined) delete process.env.ONLINE_REVIEW_URL_SECRET;
 			else process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
-			unlinkSync(filePath);
 		}
 	});
 
