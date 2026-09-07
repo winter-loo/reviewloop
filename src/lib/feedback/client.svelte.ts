@@ -1,6 +1,11 @@
 import { setContext } from 'svelte';
 import { FEEDBACK_CONTEXT, type Annotation, type FeedbackOperation, type FeedbackState } from './types';
 import { capturePreview } from './preview';
+import { MAX_PREVIEW_BYTES, pngPreviewBytes } from './limits';
+
+class FeedbackRequestError extends Error {
+ constructor(public status: number, message: string) { super(message); }
+}
 
 export function createLiveFeedback<T extends {id:string;body:string;createdAt:string}>(config:{token:()=>string;kind:string;read:()=>T[];replace:(entries:T[])=>void}) {
  let status=$state('正在连接'),error=$state(''),pendingCount=$state(0),submittedCount=$state(0),busy=$state(false);
@@ -13,8 +18,16 @@ export function createLiveFeedback<T extends {id:string;body:string;createdAt:st
  function stash(){try{localStorage.setItem(key(),JSON.stringify({queue,initialized:!!state}));}catch{error='本机缓存空间不足，请保持页面打开直到同步完成';}}
  async function request(body?:object):Promise<FeedbackState>{
   const response=await fetch(url(),body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
-  if(!response.ok){let message='同步失败，请重试';try{message=(await response.json()).message||message;}catch{}throw new Error(message);}
+  if(!response.ok){let message='同步失败，请重试';try{message=(await response.json()).message||message;}catch{}throw new FeedbackRequestError(response.status,message);}
   return response.json();
+ }
+ function discardPreview(operation:FeedbackOperation,message:string){
+  delete operation.preview;operation.previewError=message;stash();
+ }
+ function boundPreview(operation:FeedbackOperation){
+  if(operation.type==='preview'&&operation.preview&&pngPreviewBytes(operation.preview)>MAX_PREVIEW_BYTES){
+   discardPreview(operation,'截图超过 2 MiB 限制，请结合原文件与坐标查看');
+  }
  }
  function accept(next:FeedbackState){
   state=next;pendingCount=next.pendingCount;submittedCount=next.submittedCount;
@@ -38,7 +51,15 @@ export function createLiveFeedback<T extends {id:string;body:string;createdAt:st
     while(queue.length){
      await Promise.all(jobs);
      // A preview can be up to 2 MiB. Send individually to keep requests bounded.
-     const operation=queue[0];const next=await request({version:state!.review.version,operations:[operation]});
+     const operation=queue[0];boundPreview(operation);
+     let next:FeedbackState;
+     try{next=await request({version:state!.review.version,operations:[operation]});}
+     catch(cause){
+      if(operation.type!=='preview'||!operation.preview||!(cause instanceof FeedbackRequestError)||cause.status!==413)throw cause;
+      // A proxy may impose a lower limit. Keep the annotation and send the supported error-only operation.
+      discardPreview(operation,'截图上传超出服务器限制，请结合原文件与坐标查看');
+      next=await request({version:state!.review.version,operations:[operation]});
+     }
      queue=queue.filter(o=>o.operationId!==operation.operationId);accept(next);stash();
     }
     accept(await request());status='已同步';
@@ -56,7 +77,7 @@ export function createLiveFeedback<T extends {id:string;body:string;createdAt:st
    if(Array.isArray(annotation.strokes)){
     const previewOperation:FeedbackOperation={operationId:operationId(),type:'preview',id:entry.id,previewError:'截图生成被中断，请结合原文件与坐标查看'};
     queue.push(previewOperation);
-    const job=capturePreview(config.kind,annotation).then(preview=>{previewOperation.preview=preview;previewOperation.previewError='';}).catch(e=>{previewOperation.previewError=e instanceof Error?e.message:'截图生成失败';}).finally(()=>{stash();void flush();});
+    const job=capturePreview(config.kind,annotation).then(preview=>{previewOperation.preview=preview;previewOperation.previewError='';boundPreview(previewOperation);}).catch(e=>{previewOperation.previewError=e instanceof Error?e.message:'截图生成失败';}).finally(()=>{stash();void flush();});
     jobs.push(job);void job.finally(()=>jobs=jobs.filter(j=>j!==job));
    }
   }

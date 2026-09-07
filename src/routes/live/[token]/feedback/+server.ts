@@ -1,3 +1,4 @@
+import { MAX_FEEDBACK_REQUEST_BYTES } from '$lib/feedback/limits';
 import { readFileSync } from 'node:fs';
 import { error, json } from '@sveltejs/kit';
 import { liveSnapshot } from '$lib/server/live/snapshots';
@@ -32,7 +33,7 @@ export const POST: RequestHandler = async ({params,request,url}) => {
  if(!request.headers.get('content-type')?.startsWith('application/json')) throw error(415,'JSON body required');
  const reader=request.body?.getReader();if(!reader) throw error(400,'Missing body');
  let size=0;const chunks:Uint8Array[]=[];
- while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>4*1024*1024){await reader.cancel();throw error(413,'Feedback request too large');}chunks.push(value);}
+ while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>MAX_FEEDBACK_REQUEST_BYTES){await reader.cancel();throw error(413,'Feedback request too large');}chunks.push(value);}
  let body:{version:string;operations?:FeedbackOperation[];submit?:string};
  try {body=JSON.parse(Buffer.concat(chunks).toString());}catch{throw error(400,'Invalid JSON');}
  if(!body||typeof body!=='object'||Array.isArray(body))throw error(400,'Invalid request body');

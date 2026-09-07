@@ -1,3 +1,4 @@
+import { MAX_PREVIEW_BYTES } from '$lib/feedback/limits';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -66,7 +67,7 @@ export function applyOperations(db: DatabaseSync,snapshot: Snapshot,version: str
     if (op.preview) {
      if (!/^data:image\/png;base64,/.test(op.preview)) throw error(400,'Preview must be PNG');
      bytes=Buffer.from(op.preview.split(',')[1],'base64');
-     if (bytes.length>2*1024*1024||bytes.length<24||bytes.subarray(0,8).toString('hex')!=='89504e470d0a1a0a'||bytes.toString('ascii',12,16)!=='IHDR'||bytes.readUInt32BE(16)<1||bytes.readUInt32BE(20)<1||bytes.readUInt32BE(16)>4096||bytes.readUInt32BE(20)>4096) throw error(400,'Invalid PNG preview');
+     if (bytes.length>MAX_PREVIEW_BYTES||bytes.length<24||bytes.subarray(0,8).toString('hex')!=='89504e470d0a1a0a'||bytes.toString('ascii',12,16)!=='IHDR'||bytes.readUInt32BE(16)<1||bytes.readUInt32BE(20)<1||bytes.readUInt32BE(16)>4096||bytes.readUInt32BE(20)>4096) throw error(400,'Invalid PNG preview');
     }
     db.prepare('UPDATE live_annotations SET preview=?,preview_error=? WHERE review=? AND id=? AND deleted=0 AND submitted IS NULL').run(bytes, String(op.previewError||'').slice(0,300),snapshot.id,String(op.id));
    } else throw error(400,'Invalid operation type');
