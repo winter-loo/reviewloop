@@ -6,6 +6,11 @@ const pageSource = readFileSync(resolve('src/routes/document-reviews/[id]/+page.
 const serverSource = readFileSync(resolve('src/routes/document-reviews/[id]/+page.server.ts'), 'utf8');
 
 describe('document review page markup', () => {
+	it('routes image documents to the region annotation viewer', () => {
+		expect(pageSource).toContain("import ImageRegionReview from '$lib/components/review/ImageRegionReview.svelte'");
+		expect(pageSource).toMatch(/\{#if data.document.format === 'image'\}[\s\S]*<ImageRegionReview[\s\S]*reviewId=\{data.review.id\}[\s\S]*documentPath=\{markdownPath\}[\s\S]*\{comments\}[\s\S]*\{:else\}\s*<main/);
+	});
+
 	it('captures rendered Markdown selections and offers direct or batched submission', () => {
 		expect(pageSource).toContain('class="annotation-toggle"');
 		expect(pageSource).toContain('onpointerup={captureSelection}');

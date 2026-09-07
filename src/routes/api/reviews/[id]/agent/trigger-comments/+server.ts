@@ -82,7 +82,7 @@ export const POST: RequestHandler = async ({ params }) => {
 	const store = getReviewStore();
 	const openComments = store.listComments(reviewId).filter((comment) => comment.status === 'open');
 	const comments = detail.review.sourceKind === 'document'
-		? openComments.filter((comment) => !comment.textSelection || !comment.sentAt)
+		? openComments.filter((comment) => !(comment.textSelection || comment.pageRegion) || !comment.sentAt)
 		: openComments;
 	if (comments.length === 0) {
 		return json({ message: 'No unsent comments to notify.', newCommentCount: 0 });
@@ -129,7 +129,7 @@ export const POST: RequestHandler = async ({ params }) => {
 		const gatewayOutput = await notifyGateway(payload);
 		// Mark delivery only after the gateway accepts the batch; doing it earlier loses feedback on transient failures.
 		store.markCommentsSent(
-			comments.filter((comment) => comment.textSelection).map((comment) => comment.id),
+			comments.filter((comment) => comment.textSelection || comment.pageRegion).map((comment) => comment.id),
 			new Date().toISOString()
 		);
 		return json({ message: `Notified Discord executor about ${comments.length} open comment(s).`, newCommentCount: comments.length, target, gatewayOutput });

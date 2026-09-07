@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import ImageRegionReview from '$lib/components/review/ImageRegionReview.svelte';
 	import ReviewHero from '$lib/components/review/ReviewHero.svelte';
 	import { createTranslator, type MessageKey } from '$lib/i18n/translate';
 	import type { Locale } from '$lib/i18n/locales';
@@ -25,6 +26,7 @@
 			prefix: string;
 			suffix: string;
 		} | null;
+		pageRegion: { page: number; x: number; y: number; width: number; height: number } | null;
 		sentAt: string | null;
 		body: string;
 		author: string;
@@ -288,6 +290,15 @@
 	</script>
 </svelte:head>
 
+{#if data.document.format === 'image'}
+	<ImageRegionReview
+		reviewId={data.review.id}
+		documentPath={markdownPath}
+		version={data.latestVersion.version}
+		{comments}
+		locale={(data as typeof data & { locale: Locale }).locale}
+	/>
+{:else}
 <main class="page">
 	<nav><a href={resolve('/reviews')}>{t('review.backToReviews')}</a></nav>
 	<ReviewHero
@@ -407,6 +418,7 @@
 		</form>
 	{/if}
 </main>
+{/if}
 
 <style>
 	:global(body) {

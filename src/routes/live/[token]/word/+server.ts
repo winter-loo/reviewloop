@@ -41,15 +41,11 @@ export const GET: RequestHandler = ({ params }) => {
 	if (!stats.isFile()) throw error(404, 'File not found');
 	if (stats.size > 50 * 1024 * 1024) throw error(413, 'Word document exceeds 50 MiB');
 
-	const isDocx = path.extname(resolved).toLowerCase() === '.docx';
-	const contentType = isDocx
-		? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-		: 'application/msword';
 
 	return new Response(readFileSync(resolved), {
 		headers: {
-			'content-type': contentType,
-			'cache-control': 'private, max-age=3600',
+			'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+			'cache-control': 'no-store',
 			'x-content-type-options': 'nosniff'
 		}
 	});

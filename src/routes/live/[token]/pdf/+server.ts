@@ -44,7 +44,7 @@ export const GET: RequestHandler = ({ params }) => {
 	return new Response(readFileSync(resolved), {
 		headers: {
 			'content-type': 'application/pdf',
-			'cache-control': 'private, max-age=3600',
+			'cache-control': 'no-store',
 			'x-content-type-options': 'nosniff'
 		}
 	});

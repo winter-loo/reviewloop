@@ -46,7 +46,7 @@ export const GET: RequestHandler = ({ params, url }) => {
 	return new Response(readFileSync(resolved), {
 		headers: {
 			'content-type': mediaType,
-			'cache-control': 'private, max-age=3600',
+			'cache-control': 'no-store',
 			'x-content-type-options': 'nosniff'
 		}
 	});

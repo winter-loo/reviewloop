@@ -14,7 +14,7 @@ const MAX_WORD_BYTES = 50 * 1024 * 1024;
 const MAX_PPT_BYTES = 50 * 1024 * 1024;
 const MAX_EXCEL_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp', '.avif']);
-const WORD_EXTENSIONS = new Set(['.docx', '.doc']);
+const WORD_EXTENSIONS = new Set(['.docx']);
 const PPT_EXTENSIONS = new Set(['.pptx', '.ppt']);
 const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.csv']);
 

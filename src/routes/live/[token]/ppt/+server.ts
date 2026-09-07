@@ -49,7 +49,7 @@ export const GET: RequestHandler = ({ params }) => {
 	return new Response(readFileSync(resolved), {
 		headers: {
 			'content-type': contentType,
-			'cache-control': 'private, max-age=3600',
+			'cache-control': 'no-store',
 			'x-content-type-options': 'nosniff'
 		}
 	});

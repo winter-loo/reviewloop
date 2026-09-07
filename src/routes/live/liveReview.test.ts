@@ -1,3 +1,4 @@
+import { createCipheriv, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { realpathSync, writeFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +27,27 @@ const MINIMAL_PDF = Buffer.from(
 );
 
 describe('standalone live review URL', () => {
+	it('rejects legacy Word files in the CLI, page, and file endpoint', () => {
+		const filePath = '/tmp/live-test-legacy.doc';
+		const secret = 'legacy-doc-test';
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		writeFileSync(filePath, Buffer.from([0xd0, 0xcf, 0x11, 0xe0]));
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+		try {
+			expect(() => execFileSync(cli, [filePath], { env: { ...process.env }, stdio: 'pipe' })).toThrow();
+			const iv = Buffer.alloc(12, 1);
+			const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv);
+			const encrypted = Buffer.concat([cipher.update(realpathSync(filePath)), cipher.final()]);
+			const token = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url');
+			expect(() => load({ params: { token }, setHeaders: () => {} } as any)).toThrow(expect.objectContaining({ status: 403, body: { message: 'Unsupported file type' } }));
+			expect(() => getWord({ params: { token } } as any)).toThrow(expect.objectContaining({ status: 415, body: { message: 'Not a Word document' } }));
+		} finally {
+			if (originalSecret === undefined) delete process.env.ONLINE_REVIEW_URL_SECRET;
+			else process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+			unlinkSync(filePath);
+		}
+	});
+
 	it('round-trips the original path and rejects a modified token', () => {
 		const secret = 'test-secret';
 		const url = execFileSync(cli, [fixture], {
@@ -115,6 +137,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/image?index=0`)
 			} as any);
 			expect(res0.status).toBe(200);
+			expect(res0.headers.get('cache-control')).toBe('no-store');
 			expect(res0.headers.get('content-type')).toBe('image/png');
 			const buffer0 = Buffer.from(await res0.arrayBuffer());
 			expect(buffer0.equals(DUMMY_PNG)).toBe(true);
@@ -216,6 +239,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/pdf`)
 			} as any);
 			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
 			expect(res.headers.get('content-type')).toBe('application/pdf');
 			const buffer = Buffer.from(await res.arrayBuffer());
 			expect(buffer.equals(MINIMAL_PDF)).toBe(true);
@@ -267,6 +291,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/word`)
 			} as any);
 			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
 			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 			const buffer = Buffer.from(await res.arrayBuffer());
 			expect(buffer.equals(minimalDocx)).toBe(true);
@@ -341,6 +366,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/ppt`)
 			} as any);
 			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
 			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.presentationml.presentation');
 			const buffer = Buffer.from(await res.arrayBuffer());
 			expect(buffer.equals(minimalPptx)).toBe(true);
@@ -395,6 +421,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/excel`)
 			} as any);
 			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
 			expect(res.headers.get('content-type')).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 			const resBuf = Buffer.from(await res.arrayBuffer());
 			expect(resBuf.equals(buffer)).toBe(true);
@@ -442,6 +469,7 @@ describe('standalone live review URL', () => {
 				url: new URL(`https://example.com/live/${token}/excel`)
 			} as any);
 			expect(res.status).toBe(200);
+			expect(res.headers.get('cache-control')).toBe('no-store');
 			expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
 			const text = Buffer.from(await res.arrayBuffer()).toString('utf8');
 			expect(text).toBe(csvContent);
