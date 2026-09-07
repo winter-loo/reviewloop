@@ -42,3 +42,11 @@ describe('renderMarkdownDocument', () => {
 		expect(block.html).not.toContain('<script>');
 	});
 });
+
+it('keeps Mermaid source and annotation anchors while identifying diagrams', () => {
+ const [block] = renderMarkdownDocument('```mermaid\ngraph TD\n A-->B\n```\n');
+ expect(block).toMatchObject({ id: 'L1', lineStart: 1, lineEnd: 4,
+  text: 'graph TD\n A-->B\n\n', diagram: { language: 'mermaid', source: 'graph TD\n A-->B\n' } });
+ expect(block.html).toContain('language-mermaid');
+ expect(renderMarkdownDocument('```text\ngraph TD\n```')[0].diagram).toBeUndefined();
+});

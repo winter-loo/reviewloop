@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MermaidPreview from '$lib/components/review/MermaidPreview.svelte';
 	import { onMount } from 'svelte';
 	import LiveImageReview from '$lib/components/review/LiveImageReview.svelte';
 	import LivePdfReview from '$lib/components/review/LivePdfReview.svelte';
@@ -281,7 +282,13 @@
 		{#each data.renderedBlocks as block (block.id)}
 			<div class="review-block">
 				<!-- Safe: server-side markdown-it disables embedded HTML. -->
-				<section class="md-content" data-block-id={block.id}>{@html block.html}</section>
+				{#if block.diagram}
+					<MermaidPreview source={block.diagram.source}>
+						<section class="md-content" data-block-id={block.id}>{@html block.html}</section>
+					</MermaidPreview>
+				{:else}
+					<section class="md-content" data-block-id={block.id}>{@html block.html}</section>
+				{/if}
 				{#each annotationsForBlock(block.id) as annotation (annotation.id)}
 					<article class="annotation-card">
 						<blockquote>{annotation.selectedText}</blockquote>

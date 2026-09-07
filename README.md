@@ -488,3 +488,5 @@ Images are live dependencies: replacing an original image changes what the next
 request displays, and deleting it makes it unavailable. Responses use `no-store`;
 no historical image copy is retained. Keep the original directory available while
 sharing the review. Neither the Markdown source nor its image files are modified.
+
+Markdown live reviews render top-level `mermaid` fenced blocks as SVG diagrams in the browser, with collapsible source and an enlarged preview. No browser extension or external rendering service is required. Invalid diagrams retain their source and show an error. Source text remains available for annotations.

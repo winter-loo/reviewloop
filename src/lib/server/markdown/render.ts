@@ -3,6 +3,7 @@ import type Token from 'markdown-it/lib/token.mjs';
 
 export interface RenderedMarkdownBlock {
 	id: string;
+	diagram?: { language: 'mermaid'; source: string };
 	lineStart: number;
 	lineEnd: number;
 	html: string;
@@ -111,6 +112,8 @@ export function renderMarkdownDocument(source: string, resolveImage?: (src: stri
 		const html = markdown.renderer.render(group, markdown.options, {});
 		blocks.push({
 			id: `L${lineStart}`,
+			...(token.type === 'fence' && token.info.trim().toLowerCase() === 'mermaid'
+				? { diagram: { language: 'mermaid' as const, source: token.content } } : {}),
 			lineStart,
 			lineEnd,
 			html,
