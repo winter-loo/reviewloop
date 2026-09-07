@@ -171,7 +171,10 @@
 		loadError = null;
 		try {
 			const res = await fetch(data.src);
-			if (!res.ok) throw new Error(`无法获取文件 (HTTP ${res.status})`);
+			if (!res.ok) {
+				const failure = await res.json().catch(() => null);
+				throw new Error(failure?.message ?? `无法获取文件 (HTTP ${res.status})`);
+			}
 			const buffer = await res.arrayBuffer();
 
 			if (!slideContainer) return;

@@ -86,7 +86,7 @@ SvelteKit Web UI / HTTP API
 
 - Node.js 24+ / npm
 - Git
-- LibreOffice Writer on the server for legacy `.doc` previews (`.docx` does not require it).
+- LibreOffice Writer for legacy `.doc` previews and Impress for legacy `.ppt` previews on the server. Native `.docx` and `.pptx` previews do not require LibreOffice.
 - A writable review storage directory
 
 ReviewLoop uses Node 24's built-in `node:sqlite`, so the packaged server does not need native SQLite npm addons such as `better-sqlite3` on the deployment machine.
@@ -110,22 +110,30 @@ dist-cli/reviewctl.js      # primary CLI
 dist-cli/ltsql-review.js   # compatibility alias
 ```
 
-### Legacy Word previews
+### Legacy Word and PowerPoint previews
 
-Live reviews accept both `.doc` and `.docx`. For `.doc`, the server converts a
-private copy to `.docx` with LibreOffice, then uses the same Word viewer and
-annotation controls. The original file is never modified. Conversion can change
-layout slightly depending on the fonts installed on the server.
+Live reviews accept both `.doc` / `.docx` and `.ppt` / `.pptx`. For legacy `.doc`
+and `.ppt`, the server converts a private copy to `.docx` or `.pptx` with
+LibreOffice, then uses the existing viewer and annotation controls. Original
+files are never modified. Conversion can change layout slightly depending on
+fonts and features used in the document.
 
-Install LibreOffice Writer on the server (for example, `sudo apt-get install
-libreoffice-writer` on Debian/Ubuntu). The portable application tarball does not
-bundle LibreOffice. If its executable is not on PATH, set
-`REVIEW_PLATFORM_LIBREOFFICE_BIN=/absolute/path/to/soffice`.
+Install LibreOffice Writer and Impress on the server. For Debian/Ubuntu:
 
-The server needs a writable `~/.cache/reviewloop/word-conversions` directory.
-Each conversion uses an isolated profile and is removed after success or failure;
-conversion times out after 60 seconds. Missing LibreOffice produces an explicit
-setup error in the viewer instead of passing binary `.doc` bytes to the `.docx` parser.
+```bash
+sudo apt-get install libreoffice-writer libreoffice-impress
+```
+
+The portable application tarball does not bundle LibreOffice. If its executable
+is not on PATH, set `REVIEW_PLATFORM_LIBREOFFICE_BIN=/absolute/path/to/soffice`.
+The [LibreOffice conversion filters](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
+provide the Word and PowerPoint output formats.
+
+The server needs writable `~/.cache/reviewloop/word-conversions` and
+`~/.cache/reviewloop/ppt-conversions` directories. Each conversion uses an isolated
+profile and is removed after success or failure; conversion times out after 60
+seconds. Missing LibreOffice produces an explicit setup error in the viewer
+instead of passing legacy binary bytes to an incompatible parser.
 
 ## Storage and environment
 

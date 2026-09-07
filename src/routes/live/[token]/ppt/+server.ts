@@ -3,9 +3,10 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { error } from '@sveltejs/kit';
 import { _pathsFromToken, _isPptFile } from '../+page.server';
+import { convertLegacyPpt, PptConversionError } from '$lib/server/documents/convertPpt';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = ({ params }) => {
+export const GET: RequestHandler = async ({ params }) => {
 	const secret = process.env.ONLINE_REVIEW_URL_SECRET;
 	if (!secret) throw error(503, 'Live review is not configured');
 
@@ -41,14 +42,19 @@ export const GET: RequestHandler = ({ params }) => {
 	if (!stats.isFile()) throw error(404, 'File not found');
 	if (stats.size > 50 * 1024 * 1024) throw error(413, 'PowerPoint file exceeds 50 MiB');
 
-	const isPptx = path.extname(resolved).toLowerCase() === '.pptx';
-	const contentType = isPptx
-		? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-		: 'application/vnd.ms-powerpoint';
+	let bytes = readFileSync(resolved);
+	if (path.extname(resolved).toLowerCase() === '.ppt') {
+		try {
+			bytes = await convertLegacyPpt(bytes);
+		} catch (cause) {
+			if (cause instanceof PptConversionError) throw error(cause.status, cause.message);
+			throw cause;
+		}
+	}
 
-	return new Response(readFileSync(resolved), {
+	return new Response(bytes, {
 		headers: {
-			'content-type': contentType,
+			'content-type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 			'cache-control': 'no-store',
 			'x-content-type-options': 'nosniff'
 		}

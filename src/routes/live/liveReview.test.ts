@@ -41,6 +41,21 @@ describe('standalone live review URL', () => {
 		}
 	});
 
+	it('accepts legacy PowerPoint presentations in the CLI and page', () => {
+		const filePath = fileURLToPath(new URL('../../../samples/documents/reviewloop-quarterly.ppt', import.meta.url));
+		const secret = 'legacy-ppt-test';
+		const originalSecret = process.env.ONLINE_REVIEW_URL_SECRET;
+		process.env.ONLINE_REVIEW_URL_SECRET = secret;
+		try {
+			const url = execFileSync(cli, [filePath], { env: { ...process.env }, encoding: 'utf8' }).trim();
+			const token = url.split('/').at(-1)!;
+			expect(load({ params: { token }, setHeaders: () => {} } as any)).toMatchObject({ kind: 'ppt', filename: 'reviewloop-quarterly.ppt' });
+		} finally {
+			if (originalSecret === undefined) delete process.env.ONLINE_REVIEW_URL_SECRET;
+			else process.env.ONLINE_REVIEW_URL_SECRET = originalSecret;
+		}
+	});
+
 	it('round-trips the original path and rejects a modified token', () => {
 		const secret = 'test-secret';
 		const url = execFileSync(cli, [fixture], {

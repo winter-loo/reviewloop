@@ -29,3 +29,8 @@ Legacy Word sample: `documents/reviewloop-prd.doc` is a binary Word 97–2003 co
 of `reviewloop-prd.docx`, generated with LibreOffice. Preview it with
 `node bin/review.js samples/documents/reviewloop-prd.doc`; the server must have
 LibreOffice Writer installed to convert it for the Word viewer.
+
+Legacy PowerPoint sample: `documents/reviewloop-quarterly.ppt` is a binary
+PowerPoint 97–2003 copy of `reviewloop-quarterly.pptx`, generated with LibreOffice.
+Preview it with `node bin/review.js samples/documents/reviewloop-quarterly.ppt`;
+the server must have LibreOffice Impress installed to convert it for the slide viewer.
