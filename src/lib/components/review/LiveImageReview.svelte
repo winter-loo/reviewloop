@@ -1,5 +1,14 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+ import { reviewViewport, reviewWidth } from '$lib/review/visualViewport';
+ import './mobile-review.css';
+ import ReviewHeader from './ReviewHeader.svelte';
+ import ReviewToolbar from './ReviewToolbar.svelte';
+ import ReviewComposer from './ReviewComposer.svelte';
+ import ReviewComments from './ReviewComments.svelte';
+ import ReviewDetail from './ReviewDetail.svelte';
+ import prevIcon from '$lib/assets/review-icons/prev.svg?url';
+ import nextIcon from '$lib/assets/review-icons/next.svg?url';
 
 	interface ImageItem {
 		id: string;
@@ -79,7 +88,10 @@
 	let canvasElement = $state<HTMLCanvasElement | null>(null);
 	let wrapperElement = $state<HTMLDivElement | null>(null);
 	let stageElement = $state<HTMLElement | null>(null);
-	let composerTextarea = $state<HTMLTextAreaElement | null>(null);
+	let composing = $state(false);
+ let imageReady = $state(false);
+ let imageWidth = $state(300);
+ let imageHeight = $state(200);
 
 	// Zoom & Pan state (双指缩放与平移标注)
 	let zoom = $state(1);
@@ -107,6 +119,7 @@
 	const storageKey = $derived(`reviewloop:live-image:${data.token}`);
 
 	onMount(() => {
+  showListModal = window.matchMedia('(min-width: 1100px)').matches;
 		try {
 			const saved = localStorage.getItem(storageKey);
 			if (saved) {
@@ -188,8 +201,10 @@
 		isMousePanning = false;
 	}
 
-	function clampPan() {
-		if (!stageElement || zoom <= 1.02) {
+	function imageExceedsStage() { return !!stageElement && imageHeight > stageElement.clientHeight - 32; }
+
+ function clampPan() {
+		if (!stageElement || (zoom <= 1.02 && !imageExceedsStage())) {
 			panX = 0;
 			panY = 0;
 			return;
@@ -221,7 +236,7 @@
 		}
 		const stageRect = stageElement.getBoundingClientRect();
 		const cx = stageRect.left + stageRect.width / 2;
-		const cy = stageRect.top + stageRect.height / 2;
+		const cy = stageRect.top + 16 + imageHeight / 2;
 		const fx = clientX - cx;
 		const fy = clientY - cy;
 
@@ -236,7 +251,7 @@
 		if (!stageElement) return;
 		const stageRect = stageElement.getBoundingClientRect();
 		const cx = stageRect.left + stageRect.width / 2;
-		const cy = stageRect.top + stageRect.height / 2;
+		const cy = stageRect.top + 16 + imageHeight / 2;
 		applyZoomAtPoint(zoom + delta, cx, cy, true);
 	}
 
@@ -294,6 +309,7 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+  if (document.querySelector('dialog[open]') || event.target instanceof HTMLButtonElement) return;
 		if (
 			event.target instanceof HTMLInputElement ||
 			event.target instanceof HTMLTextAreaElement ||
@@ -311,9 +327,7 @@
 			event.preventDefault();
 			goToPrev();
 		} else if (event.key === 'Escape') {
-			if (draftStrokes.length > 0) {
-				cancelDraft();
-			} else if (showListModal) {
+			if (showListModal) {
 				showListModal = false;
 			} else if (zoom > 1.05) {
 				resetZoom(true);
@@ -365,12 +379,12 @@
 			lastTouchPos = { x: touchStartX, y: touchStartY };
 			touchStartTime = Date.now();
 
-			if (checkDoubleTap(touchStartX, touchStartY)) {
+			if (!annotationMode && checkDoubleTap(touchStartX, touchStartY)) {
 				e.preventDefault();
 				return;
 			}
 
-			if (!annotationMode && zoom > 1.05) {
+			if (!annotationMode && (zoom > 1.05 || imageExceedsStage())) {
 				isPanning = true;
 				e.preventDefault();
 			}
@@ -396,7 +410,7 @@
 				if (stageElement) {
 					const stageRect = stageElement.getBoundingClientRect();
 					const cx = stageRect.left + stageRect.width / 2;
-					const cy = stageRect.top + stageRect.height / 2;
+					const cy = stageRect.top + 16 + imageHeight / 2;
 					const fx = initialPinchCenter.x - cx;
 					const fy = initialPinchCenter.y - cy;
 
@@ -421,7 +435,7 @@
 		if (isPinching) {
 			if (e.touches.length < 2) {
 				isPinching = false;
-				if (zoom <= 1.05) {
+				if (zoom <= 1.05 && !imageExceedsStage()) {
 					resetZoom(true);
 				} else {
 					clampPan();
@@ -458,7 +472,7 @@
 	}
 
 	function handleStageMouseDown(e: MouseEvent) {
-		if (e.button === 1 || isSpacePressed || (!annotationMode && zoom > 1.05 && e.button === 0)) {
+		if (e.button === 1 || isSpacePressed || (!annotationMode && (zoom > 1.05 || imageExceedsStage()) && e.button === 0)) {
 			e.preventDefault();
 			isMousePanning = true;
 			lastMousePos = { x: e.clientX, y: e.clientY };
@@ -492,7 +506,10 @@
 	}
 
 	function handleResize() {
-		if (!canvasElement || !imageElement) return;
+  if (!imageElement || !stageElement) return;
+  imageWidth = Math.min(imageElement.naturalWidth || 300, Math.max(1, stageElement.clientWidth - 32));
+  imageHeight = imageWidth * (imageElement.naturalHeight || 200) / (imageElement.naturalWidth || 300);
+  tick().then(() => { syncCanvasDimensions(); redrawDraftCanvas(); });
 		syncCanvasDimensions();
 		redrawDraftCanvas();
 		clampPan();
@@ -523,7 +540,7 @@
 	}
 
 	function handlePointerDown(e: PointerEvent) {
-		if (isPinching || isSpacePressed || !annotationMode || e.button !== 0 || !canvasElement) return;
+		if (isPinching || isSpacePressed || !annotationMode || !e.isPrimary || e.button !== 0 || !canvasElement) return;
 		const pt = getNormalizedPoint(e);
 		if (!pt) return;
 		e.preventDefault();
@@ -554,7 +571,6 @@
 			draftStrokes = [...draftStrokes, currentStroke];
 			currentStroke = null;
 			redrawDraftCanvas();
-			tick().then(() => composerTextarea?.focus());
 		}
 	}
 
@@ -634,6 +650,8 @@
 	}
 
 	function cancelDraft() {
+  composing=false;
+  isDrawing=false;
 		draftStrokes = [];
 		draftComment = '';
 		currentStroke = null;
@@ -649,11 +667,13 @@
 			filename: currentImage.filename,
 			strokes: draftStrokes,
 			badgePosition: { ...firstPoint },
-			body: draftComment.trim() || '（画笔标注）',
+			body: draftComment.trim(),
 			createdAt: new Date().toISOString()
 		};
 
 		persistAnnotations([...annotations, annotation]);
+  annotationMode=false;
+  selectedAnnotationId=null;
 		cancelDraft();
 		showNotice('已保存标注');
 		return annotation;
@@ -668,27 +688,21 @@
 	function pointsToSvgPath(points: Point[]): string {
 		if (points.length === 0) return '';
 		if (points.length === 1) {
-			const x = points[0].x * 1000;
-			const y = points[0].y * 1000;
+			const x = points[0].x * imageWidth;
+			const y = points[0].y * imageHeight;
 			return `M ${x} ${y} L ${x + 0.1} ${y + 0.1}`;
 		}
-		let d = `M ${points[0].x * 1000} ${points[0].y * 1000}`;
+		let d = `M ${points[0].x * imageWidth} ${points[0].y * imageHeight}`;
 		for (let i = 1; i < points.length; i++) {
 			const p0 = points[i - 1];
 			const p1 = points[i];
-			const midX = ((p0.x + p1.x) / 2) * 1000;
-			const midY = ((p0.y + p1.y) / 2) * 1000;
-			d += ` Q ${p0.x * 1000} ${p0.y * 1000} ${midX} ${midY}`;
+			const midX = ((p0.x + p1.x) / 2) * imageWidth;
+			const midY = ((p0.y + p1.y) / 2) * imageHeight;
+			d += ` Q ${p0.x * imageWidth} ${p0.y * imageHeight} ${midX} ${midY}`;
 		}
 		const last = points[points.length - 1];
-		d += ` L ${last.x * 1000} ${last.y * 1000}`;
+		d += ` L ${last.x * imageWidth} ${last.y * imageHeight}`;
 		return d;
-	}
-
-	function formatBytes(bytes: number) {
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
 	function buildShareText(): string {
@@ -733,13 +747,6 @@
 		}
 	}
 
-	async function saveAndShare() {
-		const ann = saveDraftAnnotation();
-		if (ann) {
-			await shareAnnotations();
-		}
-	}
-
 	function exportAnnotatedImage() {
 		if (!imageElement || !currentImage) return;
 		const canvas = document.createElement('canvas');
@@ -755,7 +762,7 @@
 
 		// 2. Draw annotations for current image
 		const anns = currentAnnotations;
-		const scale = Math.max(naturalW, naturalH) / 1000;
+		const scale = naturalW / imageWidth;
 
 		anns.forEach((ann, idx) => {
 			ann.strokes.forEach((stroke) => {
@@ -805,7 +812,7 @@
 
 		try {
 			const a = document.createElement('a');
-			a.download = `annotated-${currentImage.filename}`;
+			a.download = `annotated-${currentImage.filename.replace(/\.[^.]+$/, '')}.png`;
 			a.href = canvas.toDataURL('image/png');
 			a.click();
 			showNotice('已成功导出带标注图片');
@@ -831,120 +838,16 @@
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<div class="live-image-container">
-	<!-- Top Navigation and Tool Header -->
-	<header class="top-header">
-		<div class="file-meta">
-			<div class="filename-row">
-				<strong title={currentImage?.filename}>{currentImage?.filename}</strong>
-				{#if totalImages > 1}
-					<span class="badge-counter">{currentIndex + 1} / {totalImages}</span>
-				{/if}
-			</div>
-			<div class="meta-sub">
-				<span>{formatBytes(currentImage?.size || 0)}</span>
-				<span class="divider">·</span>
-				<span>快捷键：左右/上下换图 · 双指/滚轮放大</span>
-			</div>
-		</div>
-
-		<div class="header-actions">
-			{#if currentAnnotations.length > 0}
-				<button class="ghost-btn" type="button" onclick={exportAnnotatedImage} title="下载当前合成标注后的图片">
-					<span>⬇️</span> 导出图片
-				</button>
-			{/if}
-
-			{#if totalAnnotationCount > 0}
-				<button class="ghost-btn" type="button" onclick={() => (showListModal = true)}>
-					标注 ({currentAnnotations.length})
-				</button>
-			{/if}
-
-			<button
-				class="action-btn"
-				class:active={annotationMode}
-				type="button"
-				aria-pressed={annotationMode}
-				onclick={() => {
-					annotationMode = !annotationMode;
-					if (!annotationMode) cancelDraft();
-				}}
-			>
-				{annotationMode ? '完成标注' : '✏️ 画笔标注'}
-			</button>
-
-			{#if totalAnnotationCount > 0}
-				<button class="action-btn primary" type="button" onclick={shareAnnotations}>
-					分享 {totalAnnotationCount} 条
-				</button>
-			{/if}
-		</div>
-	</header>
-
-	<!-- Paintbrush Controls Bar (when annotation mode is active) -->
-	{#if annotationMode}
-		<div class="brush-toolbar" role="toolbar" aria-label="画笔选项">
-			<div class="toolbar-group colors">
-				{#each BRUSH_COLORS as color}
-					<button
-						type="button"
-						class="color-dot"
-						class:active={brushColor === color.value}
-						style:background={color.value}
-						title={color.name}
-						aria-label={color.name}
-						onclick={() => (brushColor = color.value)}
-					></button>
-				{/each}
-			</div>
-
-			<div class="toolbar-divider"></div>
-
-			<div class="toolbar-group sizes">
-				{#each BRUSH_SIZES as size}
-					<button
-						type="button"
-						class="size-btn"
-						class:active={brushSize === size.value}
-						title={`画笔大小: ${size.name}`}
-						onclick={() => (brushSize = size.value)}
-					>
-						<span class="size-preview" style:width="{size.value * 1.5 + 4}px" style:height="{size.value * 1.5 + 4}px" style:background={brushColor}></span>
-						<span>{size.name}</span>
-					</button>
-				{/each}
-			</div>
-
-			<div class="toolbar-divider"></div>
-
-			<div class="toolbar-group actions">
-				<button
-					type="button"
-					class="tool-btn"
-					disabled={draftStrokes.length === 0}
-					title="撤销上一笔"
-					onclick={undoLastStroke}
-				>
-					↩️ 撤销
-				</button>
-				<button
-					type="button"
-					class="tool-btn"
-					disabled={draftStrokes.length === 0}
-					title="清空当前笔画"
-					onclick={cancelDraft}
-				>
-					🗑️ 清空
-				</button>
-			</div>
-		</div>
-	{/if}
-
+<div class="live-image-container live-review" class:review-comments-open={showListModal} use:reviewViewport>
+ <ReviewHeader filename={currentImage?.filename || '图片评审'} actions={[{label:'导出带标注图片',run:exportAnnotatedImage,disabled:!imageReady},{label:'分享批注',run:shareAnnotations,disabled:!totalAnnotationCount},{label:'放大',run:()=>applyZoomDelta(.5)},{label:'缩小',run:()=>applyZoomDelta(-.5)},{label:'还原缩放',run:()=>resetZoom(true)}]} hasDraft={draftStrokes.length>0} ondiscard={cancelDraft}>
+  {#if totalImages>1}<div class="review-pagination"><button aria-label="上一张图片" onclick={goToPrev} disabled={currentIndex===0}><img src={prevIcon} alt="" width="20" height="20" /></button><span>{currentIndex+1} / {totalImages} 张</span><button aria-label="下一张图片" onclick={goToNext} disabled={currentIndex===totalImages-1}><img src={nextIcon} alt="" width="20" height="20" /></button></div>{/if}
+  <button class="review-fit" onclick={() => resetZoom(true)}>适合宽度</button>
+ </ReviewHeader>
 	<!-- Main Stage: Full-screen Image Viewport ("每一个图片独占一屏") -->
 	<main
 		bind:this={stageElement}
 		class="stage"
+  use:reviewWidth={handleResize}
 		class:space-panning={isSpacePressed || isMousePanning}
 		role="region"
 		aria-label="图片展示区"
@@ -966,6 +869,7 @@
 		<!-- Centered Image Container with Zoom & Pan Transform -->
 		<div
 			class="image-wrapper"
+   style:width="{imageWidth}px"
 			class:animating={isAnimating}
 			bind:this={wrapperElement}
 			style:transform="translate3d({panX}px, {panY}px, 0) scale({zoom})"
@@ -976,11 +880,11 @@
 					src={currentImage.src}
 					alt={currentImage.filename}
 					draggable="false"
-					onload={handleResize}
+					onload={() => { imageReady=true; handleResize(); }}
 				/>
 
 				<!-- SVG Overlay for Saved Annotations -->
-				<svg class="annotations-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+				<svg class="annotations-svg" viewBox="0 0 {imageWidth} {imageHeight}" preserveAspectRatio="none">
 					{#each currentAnnotations as ann, idx (ann.id)}
 						<g
 							class="annotation-item"
@@ -1000,14 +904,14 @@
 								<path
 									d={pointsToSvgPath(stroke.points)}
 									stroke={stroke.color}
-									stroke-width={stroke.size * 1.5}
+									stroke-width={stroke.size}
 									stroke-linecap="round"
 									stroke-linejoin="round"
 									fill="none"
 								/>
 							{/each}
 							<!-- Number badge at annotation origin -->
-							<g transform="translate({ann.badgePosition.x * 1000}, {ann.badgePosition.y * 1000})">
+							<g transform="translate({ann.badgePosition.x * imageWidth}, {ann.badgePosition.y * imageHeight})">
 								<circle r="14" fill={ann.strokes[0]?.color || '#ef4444'} stroke="#ffffff" stroke-width="2.5" />
 								<text
 									text-anchor="middle"
@@ -1024,10 +928,11 @@
 				</svg>
 
 				<!-- Active Drawing Canvas -->
-				{#if annotationMode}
+				{#if annotationMode || draftStrokes.length > 0}
 					<canvas
 						bind:this={canvasElement}
 						class="drawing-canvas"
+      style:pointer-events={annotationMode ? 'auto' : 'none'}
 						onpointerdown={handlePointerDown}
 						onpointermove={handlePointerMove}
 						onpointerup={handlePointerUp}
@@ -1051,140 +956,15 @@
 			</button>
 		{/if}
 
-		<!-- Floating Zoom Controls Pill -->
-		<div class="zoom-controls" role="group" aria-label="缩放控制">
-			<button
-				type="button"
-				class="zoom-btn"
-				title="缩小 (快捷键: -)"
-				disabled={zoom <= 1.01}
-				onclick={() => applyZoomDelta(-0.5)}
-			>
-				−
-			</button>
-			<button
-				type="button"
-				class="zoom-level-btn"
-				title="点击还原 100% (双击图片也可放大/还原)"
-				onclick={() => (zoom > 1.05 ? resetZoom(true) : applyZoomDelta(1.0))}
-			>
-				{Math.round(zoom * 100)}%
-			</button>
-			<button
-				type="button"
-				class="zoom-btn"
-				title="放大 (快捷键: +)"
-				disabled={zoom >= 4.99}
-				onclick={() => applyZoomDelta(0.5)}
-			>
-				+
-			</button>
-			{#if zoom > 1.05}
-				<button
-					type="button"
-					class="zoom-reset-btn"
-					title="还原原始尺寸 (快捷键: 0 或 Esc)"
-					onclick={() => resetZoom(true)}
-				>
-					⟲ 还原
-				</button>
-			{/if}
-		</div>
-	</main>
-
-	<!-- Bottom Image Indicator Bar / Thumbnails -->
-	{#if totalImages > 1}
-		<nav class="bottom-pagination" aria-label="图片切换导航">
-			{#each data.images as img, idx}
-				<button
-					type="button"
-					class="page-indicator-dot"
-					class:active={idx === currentIndex}
-					onclick={() => goToIndex(idx)}
-					title={`${idx + 1}. ${img.filename}`}
-					aria-label={`切换至第 ${idx + 1} 张图片：${img.filename}`}
-				>
-					<span class="dot-num">{idx + 1}</span>
-				</button>
-			{/each}
-		</nav>
-	{/if}
-
-	<!-- Comment Composer when strokes have been drawn -->
-	{#if draftStrokes.length > 0}
-		<div class="composer-drawer" role="dialog" aria-modal="true" aria-label="添加画笔标注批注">
-			<div class="composer-header">
-				<strong>✏️ 已完成画笔标注（共 {draftStrokes.length} 笔）</strong>
-				<span class="hint">可以输入批注文字，也可直接保存</span>
-			</div>
-			<textarea
-				bind:this={composerTextarea}
-				bind:value={draftComment}
-				placeholder="写下关于此标注的修改意见或批注内容…"
-				rows="2"
-				maxlength="3000"
-			></textarea>
-			<div class="composer-actions">
-				<button type="button" class="btn-cancel" onclick={cancelDraft}>放弃</button>
-				<button type="button" class="btn-save" onclick={saveDraftAnnotation}>保存标注</button>
-				<button type="button" class="btn-primary" onclick={saveAndShare}>保存并分享</button>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Annotation List Drawer -->
-	{#if showListModal}
-		<button class="backdrop" type="button" aria-label="关闭批注列表" onclick={() => (showListModal = false)}></button>
-		<div class="annotations-sidebar" role="dialog" aria-modal="true" aria-label="标注列表">
-			<div class="sidebar-header">
-				<h3>标注列表 · 当前第 {currentIndex + 1} 张（共 {currentAnnotations.length} 条）</h3>
-				<button type="button" class="close-btn" onclick={() => (showListModal = false)}>✕</button>
-			</div>
-			<div class="sidebar-content">
-				{#if currentAnnotations.length === 0}
-					<div class="empty-state">当前图片暂无标注。点击上方“画笔标注”即可用画笔自由圈画。</div>
-				{:else}
-					<ul class="annotation-list">
-						{#each currentAnnotations as ann, idx (ann.id)}
-							<li>
-								<div
-									class="annotation-card"
-									class:active={selectedAnnotationId === ann.id}
-									role="button"
-									tabindex="0"
-									onclick={() => (selectedAnnotationId = ann.id)}
-									onkeydown={(e) => {
-										if (e.key === 'Enter' || e.key === ' ') {
-											e.preventDefault();
-											selectedAnnotationId = ann.id;
-										}
-									}}
-								>
-									<div class="card-header">
-										<span class="card-badge" style:background={ann.strokes[0]?.color || '#ef4444'}>{idx + 1}</span>
-										<span class="card-time">{new Date(ann.createdAt).toLocaleTimeString()}</span>
-										<button
-											type="button"
-											class="card-delete-btn"
-											title="删除标注"
-											onclick={(e) => {
-												e.stopPropagation();
-												removeAnnotation(ann.id);
-											}}
-										>
-											删除
-										</button>
-									</div>
-									<p class="card-body">{ann.body}</p>
-								</div>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-		</div>
-	{/if}
-
+ </main>
+ <ReviewToolbar paint={annotationMode} bind:color={brushColor} bind:size={brushSize} colors={BRUSH_COLORS} sizes={BRUSH_SIZES} count={totalAnnotationCount} draftCount={draftStrokes.length} comments={showListModal} disabled={!imageReady}
+  onbrowse={() => { annotationMode=false; showListModal=false; }} onpaint={() => { annotationMode=true; showListModal=false; selectedAnnotationId=null; }} oncomments={() => showListModal=!showListModal} onfinish={() => composing=true} onundo={undoLastStroke} />
+ {#if composing}<ReviewComposer context={`${currentImage?.filename} · ${draftStrokes.length} 条笔画`} bind:body={draftComment} onsave={saveDraftAnnotation} onclose={() => composing=false} />{/if}
+ {#if selectedAnnotationId}
+  {@const ann=annotations.find(a=>a.id===selectedAnnotationId)}
+  {#if ann}<ReviewDetail anchor={`第 ${ann.imageIndex+1} 张 · ${ann.filename}`} body={ann.body} createdAt={ann.createdAt} onclose={() => selectedAnnotationId=null} ondelete={() => removeAnnotation(ann.id)} onall={() => { selectedAnnotationId=null; showListModal=true; }} />{/if}
+ {/if}
+ {#if showListModal}<ReviewComments entries={annotations.map(a=>({id:a.id,anchor:`第 ${a.imageIndex+1} 张 · ${a.filename}`,body:a.body,createdAt:a.createdAt}))} onclose={() => showListModal=false} ondelete={removeAnnotation} onlocate={(id)=>{const a=annotations.find(a=>a.id===id); if(a){goToIndex(a.imageIndex);if(currentIndex===a.imageIndex){selectedAnnotationId=id;showListModal=false;}}}} />{/if}
 	<!-- Toast Notice -->
 	{#if notice}
 		<div class="notice-toast" role="status">{notice}</div>
@@ -1217,70 +997,6 @@
 	}
 
 	/* Top Header */
-	.top-header {
-		flex: none;
-		height: 58px;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0 16px;
-		background: rgba(18, 18, 23, 0.92);
-		backdrop-filter: blur(12px);
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-		z-index: 20;
-	}
-
-	.file-meta {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		min-width: 0;
-	}
-
-	.filename-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		min-width: 0;
-	}
-
-	.filename-row strong {
-		font-size: 15px;
-		font-weight: 600;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 320px;
-		color: #ffffff;
-	}
-
-	.badge-counter {
-		background: #27272a;
-		color: #e4e4e7;
-		padding: 2px 8px;
-		border-radius: 999px;
-		font-size: 12px;
-		font-weight: 600;
-		letter-spacing: 0.5px;
-	}
-
-	.meta-sub {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 12px;
-		color: #a1a1aa;
-	}
-
-	.divider {
-		opacity: 0.5;
-	}
-
-	.header-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
 
 	button {
 		font-family: inherit;
@@ -1288,143 +1004,7 @@
 		touch-action: manipulation;
 	}
 
-	.action-btn, .ghost-btn {
-		height: 36px;
-		padding: 0 13px;
-		border-radius: 8px;
-		font-size: 13px;
-		font-weight: 600;
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		transition: all 0.15s ease;
-	}
-
-	.ghost-btn {
-		background: transparent;
-		color: #d4d4d8;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-	}
-
-	.ghost-btn:hover {
-		background: rgba(255, 255, 255, 0.08);
-		color: #ffffff;
-	}
-
-	.action-btn {
-		background: #27272a;
-		color: #ffffff;
-		border: 1px solid #3f3f46;
-	}
-
-	.action-btn:hover {
-		background: #3f3f46;
-	}
-
-	.action-btn.active {
-		background: #dc2626;
-		border-color: #ef4444;
-		color: #ffffff;
-		box-shadow: 0 0 12px rgba(220, 38, 38, 0.4);
-	}
-
-	.action-btn.primary {
-		background: #2563eb;
-		border-color: #3b82f6;
-		color: #ffffff;
-	}
-
-	.action-btn.primary:hover {
-		background: #1d4ed8;
-	}
-
 	/* Brush Toolbar */
-	.brush-toolbar {
-		position: absolute;
-		top: 66px;
-		left: 50%;
-		transform: translateX(-50%);
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		background: rgba(24, 24, 27, 0.95);
-		backdrop-filter: blur(16px);
-		padding: 7px 14px;
-		border-radius: 12px;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-		z-index: 25;
-	}
-
-	.toolbar-group {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.color-dot {
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		border: 2px solid transparent;
-		padding: 0;
-		transition: transform 0.15s, border-color 0.15s;
-	}
-
-	.color-dot:hover {
-		transform: scale(1.15);
-	}
-
-	.color-dot.active {
-		border-color: #ffffff;
-		box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
-		transform: scale(1.2);
-	}
-
-	.toolbar-divider {
-		width: 1px;
-		height: 20px;
-		background: rgba(255, 255, 255, 0.15);
-	}
-
-	.size-btn {
-		height: 28px;
-		padding: 0 8px;
-		background: transparent;
-		border: 1px solid transparent;
-		border-radius: 6px;
-		color: #a1a1aa;
-		font-size: 12px;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.size-btn.active {
-		background: #3f3f46;
-		color: #ffffff;
-		border-color: #52525b;
-	}
-
-	.size-preview {
-		border-radius: 50%;
-		display: inline-block;
-	}
-
-	.tool-btn {
-		height: 28px;
-		padding: 0 8px;
-		background: #27272a;
-		border: 1px solid #3f3f46;
-		border-radius: 6px;
-		color: #e4e4e7;
-		font-size: 12px;
-	}
-
-	.tool-btn:disabled {
-		opacity: 0.35;
-		cursor: not-allowed;
-	}
 
 	/* Main Stage ("每一个图片独占一屏") */
 	.stage {
@@ -1546,364 +1126,12 @@
 	}
 
 	/* Bottom Pagination Dots */
-	.bottom-pagination {
-		position: absolute;
-		bottom: 14px;
-		left: 50%;
-		transform: translateX(-50%);
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		background: rgba(24, 24, 27, 0.75);
-		backdrop-filter: blur(12px);
-		padding: 5px 10px;
-		border-radius: 999px;
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		z-index: 18;
-	}
-
-	.page-indicator-dot {
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: rgba(255, 255, 255, 0.15);
-		border: 0;
-		padding: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #a1a1aa;
-		font-size: 11px;
-		font-weight: 600;
-		transition: all 0.2s;
-	}
-
-	.page-indicator-dot.active {
-		background: #2563eb;
-		color: #ffffff;
-		transform: scale(1.15);
-	}
 
 	/* Floating Zoom Controls Pill */
-	.zoom-controls {
-		position: absolute;
-		right: 16px;
-		bottom: 16px;
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		background: rgba(24, 24, 27, 0.88);
-		backdrop-filter: blur(14px);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 999px;
-		padding: 4px;
-		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-		z-index: 18;
-		user-select: none;
-	}
-
-	.zoom-btn {
-		width: 28px;
-		height: 28px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: 0;
-		border-radius: 50%;
-		color: #e4e4e7;
-		font-size: 16px;
-		font-weight: 500;
-		transition: background 0.15s, color 0.15s;
-		padding: 0;
-	}
-
-	.zoom-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.15);
-		color: #ffffff;
-	}
-
-	.zoom-btn:disabled {
-		opacity: 0.3;
-		cursor: not-allowed;
-	}
-
-	.zoom-level-btn {
-		min-width: 48px;
-		height: 28px;
-		padding: 0 6px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: 0;
-		border-radius: 6px;
-		color: #e4e4e7;
-		font-size: 12px;
-		font-weight: 600;
-		font-variant-numeric: tabular-nums;
-		transition: background 0.15s, color 0.15s;
-	}
-
-	.zoom-level-btn:hover {
-		background: rgba(255, 255, 255, 0.1);
-		color: #ffffff;
-	}
-
-	.zoom-reset-btn {
-		height: 28px;
-		padding: 0 8px;
-		display: flex;
-		align-items: center;
-		gap: 3px;
-		background: #3f3f46;
-		border: 0;
-		border-radius: 999px;
-		color: #ffffff;
-		font-size: 11px;
-		font-weight: 600;
-		margin-left: 2px;
-		transition: background 0.15s;
-	}
-
-	.zoom-reset-btn:hover {
-		background: #52525b;
-	}
 
 	/* Composer Drawer */
-	.composer-drawer {
-		position: fixed;
-		bottom: 24px;
-		left: 50%;
-		transform: translateX(-50%);
-		width: min(520px, calc(100% - 32px));
-		background: #18181b;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 16px;
-		padding: 14px 16px;
-		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		z-index: 30;
-	}
-
-	.composer-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		font-size: 13px;
-	}
-
-	.composer-header strong {
-		color: #ffffff;
-	}
-
-	.composer-header .hint {
-		color: #71717a;
-		font-size: 12px;
-	}
-
-	.composer-drawer textarea {
-		width: 100%;
-		background: #27272a;
-		border: 1px solid #3f3f46;
-		border-radius: 8px;
-		padding: 10px;
-		color: #ffffff;
-		font-family: inherit;
-		font-size: 14px;
-		resize: none;
-		outline: none;
-	}
-
-	.composer-drawer textarea:focus {
-		border-color: #2563eb;
-		box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
-	}
-
-	.composer-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-
-	.btn-cancel, .btn-save, .btn-primary {
-		height: 34px;
-		padding: 0 14px;
-		border-radius: 8px;
-		font-size: 13px;
-		font-weight: 600;
-	}
-
-	.btn-cancel {
-		background: transparent;
-		border: 1px solid #3f3f46;
-		color: #a1a1aa;
-	}
-
-	.btn-cancel:hover {
-		color: #ffffff;
-	}
-
-	.btn-save {
-		background: #3f3f46;
-		border: 1px solid #52525b;
-		color: #ffffff;
-	}
-
-	.btn-save:hover {
-		background: #52525b;
-	}
-
-	.btn-primary {
-		background: #2563eb;
-		border: 1px solid #3b82f6;
-		color: #ffffff;
-	}
-
-	.btn-primary:hover {
-		background: #1d4ed8;
-	}
 
 	/* Annotations Sidebar */
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
-		border: 0;
-		z-index: 40;
-	}
-
-	.annotations-sidebar {
-		position: fixed;
-		top: 0;
-		right: 0;
-		bottom: 0;
-		width: min(380px, 90vw);
-		background: #18181b;
-		border-left: 1px solid rgba(255, 255, 255, 0.1);
-		display: flex;
-		flex-direction: column;
-		z-index: 45;
-		box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
-	}
-
-	.sidebar-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 16px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	}
-
-	.sidebar-header h3 {
-		margin: 0;
-		font-size: 14px;
-		color: #ffffff;
-	}
-
-	.close-btn {
-		width: 32px;
-		height: 32px;
-		border-radius: 6px;
-		background: transparent;
-		border: 0;
-		color: #a1a1aa;
-		font-size: 16px;
-	}
-
-	.close-btn:hover {
-		background: rgba(255, 255, 255, 0.08);
-		color: #ffffff;
-	}
-
-	.sidebar-content {
-		flex: 1;
-		overflow-y: auto;
-		padding: 16px;
-	}
-
-	.empty-state {
-		text-align: center;
-		padding: 40px 16px;
-		color: #71717a;
-		font-size: 13px;
-		line-height: 1.6;
-	}
-
-	.annotation-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.annotation-card {
-		background: #27272a;
-		border: 1px solid #3f3f46;
-		border-radius: 10px;
-		padding: 12px;
-		cursor: pointer;
-		transition: border-color 0.15s, background 0.15s;
-	}
-
-	.annotation-card:hover {
-		border-color: #71717a;
-	}
-
-	.annotation-card.active {
-		border-color: #2563eb;
-		background: #1e293b;
-	}
-
-	.card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-bottom: 6px;
-	}
-
-	.card-badge {
-		width: 22px;
-		height: 22px;
-		border-radius: 50%;
-		color: #ffffff;
-		font-size: 11px;
-		font-weight: 700;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.card-time {
-		font-size: 11px;
-		color: #a1a1aa;
-		flex: 1;
-	}
-
-	.card-delete-btn {
-		background: transparent;
-		border: 0;
-		color: #ef4444;
-		font-size: 12px;
-		padding: 2px 6px;
-		border-radius: 4px;
-	}
-
-	.card-delete-btn:hover {
-		background: rgba(239, 68, 68, 0.15);
-	}
-
-	.card-body {
-		margin: 0;
-		font-size: 13px;
-		color: #e4e4e7;
-		line-height: 1.5;
-		white-space: pre-wrap;
-	}
 
 	/* Toast Notice */
 	.notice-toast {
@@ -1936,22 +1164,7 @@
 
 	/* Mobile Adaptations */
 	@media (max-width: 640px) {
-		.top-header {
-			padding: 0 10px;
-		}
-		.filename-row strong {
-			max-width: 130px;
-			font-size: 14px;
-		}
-		.meta-sub span:last-child {
-			display: none;
-		}
-		.brush-toolbar {
-			top: 62px;
-			width: calc(100% - 16px);
-			justify-content: space-between;
-			padding: 6px 10px;
-		}
+
 		.image-wrapper {
 			max-width: calc(100vw - 16px);
 			max-height: calc(100dvh - 120px);
@@ -1971,9 +1184,6 @@
 		.nav-arrow.right {
 			right: 6px;
 		}
-		.composer-drawer {
-			bottom: 12px;
-			padding: 12px;
-		}
+
 	}
 </style>

@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { formatFileSize } from '$lib/review/fileSize';
+	import { reviewViewport, reviewWidth } from '$lib/review/visualViewport';
+	import './mobile-review.css';
+	import { twoFingerPan } from '$lib/review/twoFingerPan';
+	import ReviewHeader from './ReviewHeader.svelte';
+	import ReviewHint from './ReviewHint.svelte';
+	import ReviewToolbar from './ReviewToolbar.svelte';
+	import ReviewComposer from './ReviewComposer.svelte';
+	import ReviewComments from './ReviewComments.svelte';
+	import ReviewDetail from './ReviewDetail.svelte';
 
 	interface Props {
 		data: {
@@ -43,12 +51,12 @@
 	type WordAnnotation = TextAnnotation | BrushAnnotation;
 
 	const BRUSH_COLORS = [
-		{ name: '红色', value: '#ef4444' },
-		{ name: '橙黄', value: '#f59e0b' },
-		{ name: '蓝色', value: '#3b82f6' },
-		{ name: '绿色', value: '#10b981' },
-		{ name: '紫色', value: '#a855f7' },
-		{ name: '荧光黄', value: '#eab308' }
+		{ name: '红色', value: '#e54b4b' },
+		{ name: '橙黄', value: '#e99821' },
+		{ name: '蓝色', value: '#2563eb' },
+		{ name: '绿色', value: '#159b79' },
+		{ name: '紫色', value: '#9364d8' },
+		{ name: '白色', value: '#ffffff' }
 	];
 
 	const BRUSH_SIZES = [
@@ -85,17 +93,16 @@
 	let textSelectionCandidate = $state<{ selectedText: string; range: Range } | null>(null);
 	let textDraft = $state<{ selectedText: string } | null>(null);
 	let textDraftBody = $state('');
-	let textComposerTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	// Brush annotation state
 	let brushMode = $state(false);
-	let brushColor = $state('#ef4444');
+	let brushColor = $state('#e54b4b');
 	let brushSize = $state(6);
 	let isDrawing = $state(false);
 	let currentStroke = $state<Stroke | null>(null);
 	let draftStrokes = $state<Stroke[]>([]);
+	let composingBrush = $state(false);
 	let brushDraftComment = $state('');
-	let brushComposerTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	const storageKey = $derived(`reviewloop:live-word:${data.token}`);
 
@@ -108,6 +115,7 @@
 	});
 
 	onMount(() => {
+		showListModal = window.matchMedia('(min-width: 1100px)').matches;
 		try {
 			const saved = localStorage.getItem(storageKey);
 			if (saved) {
@@ -232,7 +240,7 @@
 		textDraftBody = '';
 		textSelectionCandidate = null;
 		window.getSelection()?.removeAllRanges();
-		tick().then(() => textComposerTextarea?.focus());
+
 	}
 
 	function cancelTextDraft() {
@@ -253,7 +261,8 @@
 
 		const next = [...annotations, annotation];
 		persistAnnotations(next);
-		selectedAnnotationId = annotation.id;
+		selectedAnnotationId = null;
+		brushMode = false;
 		cancelTextDraft();
 		showNotice('已保存文字批注');
 		renderHighlights();
@@ -349,7 +358,7 @@
 	}
 
 	function handlePointerDown(e: PointerEvent) {
-		if (!brushMode || e.button !== 0 || !drawingCanvas) return;
+		if (!brushMode || !e.isPrimary || e.button !== 0 || !drawingCanvas) return;
 		const pt = getNormalizedPoint(e);
 		if (!pt) return;
 
@@ -380,7 +389,6 @@
 			draftStrokes = [...draftStrokes, currentStroke];
 			currentStroke = null;
 			redrawDraftCanvas();
-			tick().then(() => brushComposerTextarea?.focus());
 		}
 	}
 
@@ -465,6 +473,7 @@
 	}
 
 	function cancelBrushDraft() {
+		composingBrush = false;
 		draftStrokes = [];
 		brushDraftComment = '';
 		currentStroke = null;
@@ -488,7 +497,8 @@
 
 		const next = [...annotations, annotation];
 		persistAnnotations(next);
-		selectedAnnotationId = annotation.id;
+		selectedAnnotationId = null;
+		brushMode = false;
 		cancelBrushDraft();
 		showNotice('已保存画笔标注');
 	}
@@ -541,148 +551,13 @@
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<div class="word-review-container">
+<div class="word-review-container live-review" class:review-comments-open={showListModal} class:review-painting={brushMode} use:reviewViewport>
 	<!-- Top Toolbar -->
-	<header class="word-header">
-		<div class="file-meta">
-			<span class="file-icon">📝</span>
-			<div class="file-text">
-				<strong class="file-name" title={data.filename}>{data.filename}</strong>
-				<span class="file-sub">Word 文档 · {formatFileSize(data.size)}</span>
-			</div>
-		</div>
-
-		<!-- Center Zoom & Mode Controls -->
-		<div class="center-controls">
-			<div class="zoom-pill">
-				<button
-					type="button"
-					class="zoom-btn"
-					onclick={() => (zoom = Math.max(MIN_ZOOM, +(zoom - 0.15).toFixed(2)))}
-					disabled={zoom <= MIN_ZOOM}
-					title="缩小"
-				>
-					-
-				</button>
-				<span class="zoom-val">{Math.round(zoom * 100)}%</span>
-				<button
-					type="button"
-					class="zoom-btn"
-					onclick={() => (zoom = Math.min(MAX_ZOOM, +(zoom + 0.15).toFixed(2)))}
-					disabled={zoom >= MAX_ZOOM}
-					title="放大"
-				>
-					+
-				</button>
-					<button
-						type="button"
-						class="zoom-reset"
-						onclick={() => {
-							zoom = 1;
-							fitToWidth();
-						}}>重置</button
-					>
-				</div>
-		</div>
-
-		<!-- Right Actions Toolbar -->
-		<div class="toolbar-actions">
-			{#if brushMode}
-				<div class="brush-palette" role="toolbar" aria-label="画笔选项">
-					<div class="color-picker">
-						{#each BRUSH_COLORS as color}
-							<button
-								type="button"
-								class="color-dot"
-								class:selected={brushColor === color.value}
-								style="background-color: {color.value}"
-								title={color.name}
-								onclick={() => (brushColor = color.value)}
-							></button>
-						{/each}
-					</div>
-					<div class="size-picker">
-						{#each BRUSH_SIZES as sz}
-							<button
-								type="button"
-								class="size-pill"
-								class:selected={brushSize === sz.value}
-								onclick={() => (brushSize = sz.value)}
-							>
-								{sz.name}
-							</button>
-						{/each}
-					</div>
-					<div class="action-divider"></div>
-					<button
-						type="button"
-						class="mini-btn"
-						onclick={undoLastStroke}
-						disabled={draftStrokes.length === 0}
-						title="撤销最后一笔"
-					>
-						↩
-					</button>
-					<button
-						type="button"
-						class="mini-btn"
-						onclick={cancelBrushDraft}
-						disabled={draftStrokes.length === 0}
-						title="清空未保存画笔"
-					>
-						✕
-					</button>
-				</div>
-			{/if}
-
-			<button
-				class="tool-btn"
-				class:active={brushMode}
-				type="button"
-				onclick={() => {
-					brushMode = !brushMode;
-					if (!brushMode && draftStrokes.length > 0) cancelBrushDraft();
-				}}
-			>
-				<span class="btn-icon">🎨</span>
-				<span>{brushMode ? '退出画笔' : '画笔标注'}</span>
-			</button>
-
-			<button
-				class="tool-btn badge-btn"
-				type="button"
-				onclick={() => (showListModal = true)}
-				title="查看所有标注"
-			>
-				<span class="btn-icon">💬</span>
-				<span>批注 ({totalAnnotationCount})</span>
-			</button>
-
-			<button
-				class="tool-btn share-btn"
-				type="button"
-				onclick={shareAnnotations}
-				disabled={annotations.length === 0}
-				title="导出或复制批注 JSON"
-			>
-				<span class="btn-icon">📤</span>
-				<span class="btn-label-desktop">导出批注</span>
-			</button>
-
-			<button
-				class="tool-btn print-btn"
-				type="button"
-				onclick={printDocument}
-				title="打印或另存为 PDF"
-			>
-				<span class="btn-icon">🖨️</span>
-				<span class="btn-label-desktop">打印</span>
-			</button>
-		</div>
-	</header>
+	<ReviewHeader filename={data.filename} actions={[{ label: '适合宽度', run: () => { zoom = 1; fitToWidth(); } }, { label: '导出批注 JSON', run: shareAnnotations, disabled: !annotations.length }, { label: '打印 / 另存为 PDF', run: printDocument }, { label: '放大', run: () => zoom = Math.min(MAX_ZOOM, zoom + 0.15) }, { label: '缩小', run: () => zoom = Math.max(MIN_ZOOM, zoom - 0.15) }]} hasDraft={draftStrokes.length > 0} ondiscard={cancelBrushDraft} />
+<ReviewHint ready={!isLoading} placement="document" text="选择文字即可添加批注" />
 
 	<!-- Scrollable Document Stage -->
-	<main class="word-stage" bind:this={scrollContainer}>
+	<main use:reviewWidth={() => { zoom=1; fitToWidth(); syncCanvasSize(); }} use:twoFingerPan={{ enabled: brushMode, zoom, min: MIN_ZOOM, max: MAX_ZOOM, onzoom: (value) => zoom=value, oncancel: () => { isDrawing=false; currentStroke=null; redrawDraftCanvas(); } }} class="word-stage" bind:this={scrollContainer}>
 		{#if isLoading}
 			<div class="loading-overlay">
 				<div class="spinner"></div>
@@ -752,10 +627,10 @@
 			{/if}
 
 			<!-- Active Drawing Canvas -->
-			{#if brushMode}
+			{#if brushMode || draftStrokes.length > 0}
 				<canvas
 					bind:this={drawingCanvas}
-					class="word-drawing-canvas"
+					class="word-drawing-canvas" style:pointer-events={brushMode ? "auto" : "none"}
 					onpointerdown={handlePointerDown}
 					onpointermove={handlePointerMove}
 					onpointerup={handlePointerUp}
@@ -773,164 +648,31 @@
 			</div>
 		{/if}
 	</main>
+ <ReviewToolbar paint={brushMode} bind:color={brushColor} bind:size={brushSize} colors={BRUSH_COLORS} sizes={BRUSH_SIZES} count={totalAnnotationCount} draftCount={draftStrokes.length} comments={showListModal} disabled={isLoading}
+  onbrowse={() => { brushMode = false; showListModal=false; }} onpaint={() => { brushMode = true; showListModal=false; selectedAnnotationId=null; }}
+  oncomments={() => { showListModal = !showListModal; }} onfinish={() => { composingBrush=true; }} onundo={undoLastStroke} />
 
-	<!-- Text Comment Composer Modal/Popup -->
-	{#if textDraft}
-		<div class="composer-popup">
-			<div class="composer-header">
-				<span class="composer-title">💬 添加文字批注</span>
-				<button type="button" class="close-composer-btn" onclick={cancelTextDraft}>✕</button>
-			</div>
-			<blockquote class="composer-quote">“{textDraft.selectedText}”</blockquote>
-			<textarea
-				bind:this={textComposerTextarea}
-				bind:value={textDraftBody}
-				placeholder="写下针对该段内容的批注或修改建议..."
-				rows="3"
-				onkeydown={(e) => {
-					if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-						e.preventDefault();
-						saveTextDraft();
-					} else if (e.key === 'Escape') {
-						e.preventDefault();
-						cancelTextDraft();
-					}
-				}}
-			></textarea>
-			<div class="composer-actions">
-				<button type="button" class="btn-secondary" onclick={cancelTextDraft}>取消</button>
-				<button
-					type="button"
-					class="btn-primary"
-					disabled={!textDraftBody.trim()}
-					onclick={saveTextDraft}
-				>
-					保存批注
-				</button>
-			</div>
-		</div>
-	{/if}
-
+{#if textDraft}
+ <ReviewComposer brush={false} context="Word · 所选文字" quote={textDraft.selectedText} bind:body={textDraftBody} onclose={cancelTextDraft} onsave={saveTextDraft} />
+ {/if}
 	<!-- Brush Draft Comment Composer -->
-	{#if draftStrokes.length > 0}
-		<div class="composer-popup">
-			<div class="composer-header">
-				<span class="composer-title">✏️ 保存画笔标注</span>
-				<span class="composer-sub">已绘制 {draftStrokes.length} 笔</span>
-			</div>
-			<textarea
-				bind:this={brushComposerTextarea}
-				bind:value={brushDraftComment}
-				placeholder="填写修改意见或批注内容（支持多行，留空直接保存）..."
-				rows="3"
-				onkeydown={(e) => {
-					if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-						e.preventDefault();
-						saveBrushDraft();
-					} else if (e.key === 'Escape') {
-						e.preventDefault();
-						cancelBrushDraft();
-					}
-				}}
-			></textarea>
-			<div class="composer-actions">
-				<button type="button" class="btn-secondary" onclick={cancelBrushDraft}>放弃</button>
-				<button type="button" class="btn-primary" onclick={saveBrushDraft}>保存标注</button>
-			</div>
-		</div>
-	{/if}
+
+ {#if draftStrokes.length > 0 && composingBrush}
+  <ReviewComposer context={`Word · ${draftStrokes.length} 条笔画`} bind:body={brushDraftComment} onclose={() => composingBrush=false} onsave={saveBrushDraft} />
+ {/if}
 
 	<!-- Selected Annotation Detail Card -->
 	{#if selectedAnnotationId}
-		{@const selectedAnn = annotations.find((a) => a.id === selectedAnnotationId)}
-		{#if selectedAnn}
-			<div class="detail-card">
-				<div class="detail-header">
-					<div class="detail-title">
-						<span class="detail-badge" class:brush-badge={selectedAnn.type === 'brush'}>
-							{selectedAnn.type === 'text' ? '文字批注' : '画笔标注'}
-						</span>
-						<span class="detail-time">
-							{new Date(selectedAnn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-						</span>
-					</div>
-					<button
-						type="button"
-						class="close-detail-btn"
-						onclick={() => (selectedAnnotationId = null)}
-					>
-						✕
-					</button>
-				</div>
-				{#if selectedAnn.type === 'text'}
-					<blockquote class="detail-quote">“{selectedAnn.selectedText}”</blockquote>
-				{/if}
-				<p class="detail-body">
-					{selectedAnn.body || '（无附注文字）'}
-				</p>
-				<div class="detail-footer">
-					<button
-						type="button"
-						class="delete-ann-btn"
-						onclick={() => deleteAnnotation(selectedAnn.id)}
-					>
-						删除此批注
-					</button>
-				</div>
-			</div>
-		{/if}
-	{/if}
+  {@const selectedAnn = annotations.find(a => a.id === selectedAnnotationId)}
+  {#if selectedAnn}
+   <ReviewDetail anchor={selectedAnn.type === 'text' ? '文字批注' : '画笔标注'} body={selectedAnn.body} createdAt={selectedAnn.createdAt} quote={selectedAnn.type === 'text' ? selectedAnn.selectedText : ''} onclose={() => selectedAnnotationId=null} ondelete={() => deleteAnnotation(selectedAnn.id)} onall={() => { selectedAnnotationId=null; showListModal=true; }} />
+  {/if}
+ {/if}
 
 	<!-- All Annotations Modal -->
-	{#if showListModal}
-		<div class="modal-wrapper">
-			<button
-				class="modal-backdrop"
-				type="button"
-				aria-label="关闭标注列表"
-				onclick={() => (showListModal = false)}
-			></button>
-			<div class="modal-content" role="dialog" aria-modal="true" aria-label="全部批注列表">
-				<div class="modal-header">
-					<h3>全部文档批注与标注 ({totalAnnotationCount})</h3>
-					<button type="button" class="close-btn" onclick={() => (showListModal = false)}>✕</button>
-				</div>
-				<div class="modal-body">
-					{#if annotations.length === 0}
-						<div class="empty-list">
-							<p>暂无批注。您可以直接在正文划选文字添加批注，或开启「画笔标注」圈画重点！</p>
-						</div>
-					{:else}
-						<div class="ann-list">
-							{#each annotations as ann, idx (ann.id)}
-								<div class="ann-item">
-									<div class="ann-item-header">
-										<span class="ann-item-badge" class:brush-badge={ann.type === 'brush'}>
-											#{idx + 1} {ann.type === 'text' ? '文字批注' : '画笔标注'}
-										</span>
-										<span class="ann-item-time">{new Date(ann.createdAt).toLocaleString()}</span>
-									</div>
-									{#if ann.type === 'text'}
-										<blockquote class="ann-item-quote">“{ann.selectedText}”</blockquote>
-									{/if}
-									<p class="ann-item-text">{ann.body || '（画笔圈注，未填写文字）'}</p>
-									<div class="ann-item-actions">
-										<button
-											type="button"
-											class="btn-delete"
-											onclick={() => deleteAnnotation(ann.id)}
-										>
-											删除
-										</button>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</div>
-			</div>
-		</div>
-	{/if}
+ {#if showListModal}
+ <ReviewComments entries={annotations.map(a => ({ id:a.id, anchor:a.type==='text' ? 'Word · 文字批注' : 'Word · 画笔标注', body:a.body, createdAt:a.createdAt, quote:a.type==='text' ? a.selectedText : undefined }))} onclose={() => showListModal=false} ondelete={deleteAnnotation} onlocate={(id) => { selectedAnnotationId=id; showListModal=false; const a=annotations.find(a=>a.id===id); if(a?.type==='brush' && scrollContainer && docContainer) scrollContainer.scrollTop=a.badgePosition.y*docContainer.scrollHeight*zoom; }}></ReviewComments>
+ {/if}
 
 	<!-- Notice Toast -->
 	{#if notice}
@@ -951,233 +693,10 @@
 	}
 
 	/* Header */
-	.word-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		height: 56px;
-		padding: 0 16px;
-		background: rgba(18, 18, 20, 0.95);
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-		backdrop-filter: blur(12px);
-		z-index: 30;
-		flex-shrink: 0;
-	}
-
-	.file-meta {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		/* The filename is the one thing allowed to give way when space runs
-		   short; every control keeps its intrinsic width (see flex-shrink: 0
-		   below), otherwise flex squeezes the button labels to one glyph per
-		   line and they render as vertical strips of text. */
-		min-width: 0;
-		flex: 1 1 auto;
-	}
-
-	.file-icon {
-		font-size: 20px;
-		flex-shrink: 0;
-	}
-
-	.file-text {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	.file-name {
-		font-size: 13px;
-		font-weight: 600;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 240px;
-	}
-
-	.file-sub {
-		font-size: 11px;
-		color: #a1a1aa;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
 
 	/* Center Zoom */
-	.center-controls {
-		display: flex;
-		align-items: center;
-		flex-shrink: 0;
-	}
-
-	.word-header button {
-		white-space: nowrap;
-	}
-
-	.zoom-pill {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		background: rgba(255, 255, 255, 0.06);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 999px;
-		padding: 2px 8px;
-		font-size: 12px;
-	}
-
-	.zoom-btn {
-		background: transparent;
-		border: none;
-		color: #d4d4d8;
-		font-size: 15px;
-		cursor: pointer;
-		width: 20px;
-		height: 20px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 50%;
-	}
-
-	.zoom-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.15);
-		color: #ffffff;
-	}
-
-	.zoom-btn:disabled {
-		opacity: 0.3;
-		cursor: not-allowed;
-	}
-
-	.zoom-val {
-		min-width: 44px;
-		text-align: center;
-		font-weight: 600;
-		color: #ffffff;
-	}
-
-	.zoom-reset {
-		background: transparent;
-		border: none;
-		color: #3b82f6;
-		font-size: 11px;
-		cursor: pointer;
-		margin-left: 4px;
-	}
 
 	/* Right Actions */
-	.toolbar-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-shrink: 0;
-	}
-
-	.brush-palette {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		background: rgba(255, 255, 255, 0.06);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		padding: 3px 8px;
-		border-radius: 8px;
-	}
-
-	.color-picker {
-		display: flex;
-		gap: 5px;
-	}
-
-	.color-dot {
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		border: 2px solid transparent;
-		cursor: pointer;
-		padding: 0;
-		transition: transform 0.1s;
-	}
-
-	.color-dot.selected {
-		border-color: #ffffff;
-		transform: scale(1.25);
-	}
-
-	.size-picker {
-		display: flex;
-		gap: 3px;
-	}
-
-	.size-pill {
-		background: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		color: #a1a1aa;
-		border-radius: 4px;
-		padding: 1px 6px;
-		font-size: 11px;
-		cursor: pointer;
-	}
-
-	.size-pill.selected {
-		background: rgba(255, 255, 255, 0.2);
-		color: #ffffff;
-		border-color: #ffffff;
-	}
-
-	.action-divider {
-		width: 1px;
-		height: 16px;
-		background: rgba(255, 255, 255, 0.15);
-	}
-
-	.mini-btn {
-		background: transparent;
-		border: none;
-		color: #d4d4d8;
-		font-size: 13px;
-		cursor: pointer;
-		padding: 2px 4px;
-		border-radius: 4px;
-	}
-
-	.mini-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.15);
-		color: #fff;
-	}
-
-	.mini-btn:disabled {
-		opacity: 0.2;
-		cursor: not-allowed;
-	}
-
-	.tool-btn {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		height: 32px;
-		padding: 0 12px;
-		border-radius: 8px;
-		background: rgba(255, 255, 255, 0.08);
-		border: 1px solid rgba(255, 255, 255, 0.12);
-		color: #e4e4e7;
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.tool-btn:hover {
-		background: rgba(255, 255, 255, 0.16);
-		color: #ffffff;
-	}
-
-	.tool-btn.active {
-		background: #2563eb;
-		border-color: #3b82f6;
-		color: #ffffff;
-		box-shadow: 0 0 12px rgba(37, 99, 235, 0.4);
-	}
 
 	/* Main Stage */
 	.word-stage {
@@ -1253,11 +772,11 @@
 
 	.badge-marker {
 		cursor: pointer;
-		transition: transform 0.15s ease;
+		transition: filter 0.15s ease;
 	}
 
 	.badge-marker:hover {
-		transform: scale(1.2);
+		filter: drop-shadow(0 2px 5px rgba(37, 99, 235, 0.5));
 	}
 
 	.badge-bg {
@@ -1320,318 +839,10 @@
 	}
 
 	/* Composer Popup */
-	.composer-popup {
-		position: fixed;
-		bottom: 24px;
-		left: 50%;
-		transform: translateX(-50%);
-		width: 90%;
-		max-width: 440px;
-		background: rgba(24, 24, 27, 0.96);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 12px;
-		padding: 14px;
-		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(16px);
-		z-index: 50;
-	}
-
-	.composer-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 8px;
-	}
-
-	.composer-title {
-		font-size: 13px;
-		font-weight: 600;
-	}
-
-	.close-composer-btn {
-		background: transparent;
-		border: none;
-		color: #a1a1aa;
-		cursor: pointer;
-		font-size: 14px;
-	}
-
-	.composer-quote {
-		margin: 0 0 8px;
-		padding: 6px 10px;
-		background: rgba(255, 255, 255, 0.05);
-		border-left: 3px solid #3b82f6;
-		font-size: 12px;
-		color: #d4d4d8;
-		border-radius: 0 4px 4px 0;
-	}
-
-	.composer-popup textarea {
-		width: 100%;
-		box-sizing: border-box;
-		background: rgba(0, 0, 0, 0.4);
-		border: 1px solid rgba(255, 255, 255, 0.12);
-		border-radius: 6px;
-		padding: 8px;
-		color: #ffffff;
-		font-size: 13px;
-		resize: vertical;
-		outline: none;
-	}
-
-	.composer-popup textarea:focus {
-		border-color: #3b82f6;
-	}
-
-	.composer-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		margin-top: 10px;
-	}
-
-	.btn-secondary {
-		padding: 6px 12px;
-		background: rgba(255, 255, 255, 0.1);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 6px;
-		color: #d4d4d8;
-		font-size: 12px;
-		cursor: pointer;
-	}
-
-	.btn-primary {
-		padding: 6px 14px;
-		background: #2563eb;
-		border: none;
-		border-radius: 6px;
-		color: #ffffff;
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
 
 	/* Detail Card */
-	.detail-card {
-		position: fixed;
-		top: 68px;
-		right: 16px;
-		width: 280px;
-		background: rgba(24, 24, 27, 0.95);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 10px;
-		padding: 12px;
-		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-		backdrop-filter: blur(14px);
-		z-index: 45;
-	}
-
-	.detail-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 8px;
-	}
-
-	.detail-badge {
-		background: rgba(59, 130, 246, 0.2);
-		color: #93c5fd;
-		font-size: 11px;
-		font-weight: 600;
-		padding: 2px 6px;
-		border-radius: 4px;
-	}
-
-	.detail-badge.brush-badge {
-		background: rgba(239, 68, 68, 0.2);
-		color: #fca5a5;
-	}
-
-	.detail-time {
-		font-size: 11px;
-		color: #a1a1aa;
-		margin-left: 6px;
-	}
-
-	.close-detail-btn {
-		background: transparent;
-		border: none;
-		color: #a1a1aa;
-		cursor: pointer;
-		font-size: 12px;
-	}
-
-	.detail-quote {
-		margin: 0 0 8px;
-		padding: 4px 8px;
-		background: rgba(255, 255, 255, 0.05);
-		border-left: 2px solid #3b82f6;
-		font-size: 11px;
-		color: #d4d4d8;
-	}
-
-	.detail-body {
-		font-size: 13px;
-		color: #f4f4f5;
-		margin: 0 0 10px;
-		white-space: pre-wrap;
-	}
-
-	.detail-footer {
-		display: flex;
-		justify-content: flex-end;
-	}
-
-	.delete-ann-btn {
-		background: transparent;
-		border: none;
-		color: #ef4444;
-		font-size: 11px;
-		cursor: pointer;
-		padding: 0;
-	}
 
 	/* Modal Backdrop & Content */
-	.modal-wrapper {
-		position: fixed;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 60;
-	}
-
-	.modal-backdrop {
-		position: absolute;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(4px);
-		border: none;
-		cursor: pointer;
-		padding: 0;
-		margin: 0;
-		width: 100%;
-		height: 100%;
-	}
-
-	.modal-content {
-		position: relative;
-		z-index: 1;
-		width: 90%;
-		max-width: 520px;
-		max-height: 80vh;
-		background: #18181b;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 12px;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		box-shadow: 0 25px 50px rgba(0, 0, 0, 0.7);
-	}
-
-	.modal-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 14px 18px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-	}
-
-	.modal-header h3 {
-		margin: 0;
-		font-size: 15px;
-	}
-
-	.close-btn {
-		background: transparent;
-		border: none;
-		color: #a1a1aa;
-		font-size: 16px;
-		cursor: pointer;
-	}
-
-	.modal-body {
-		padding: 16px;
-		overflow-y: auto;
-		max-height: calc(80vh - 60px);
-	}
-
-	.empty-list {
-		text-align: center;
-		color: #a1a1aa;
-		padding: 30px 0;
-		font-size: 13px;
-	}
-
-	.ann-list {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.ann-item {
-		background: rgba(255, 255, 255, 0.04);
-		border: 1px solid rgba(255, 255, 255, 0.08);
-		border-radius: 8px;
-		padding: 12px;
-	}
-
-	.ann-item-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 6px;
-	}
-
-	.ann-item-badge {
-		font-size: 11px;
-		font-weight: 600;
-		color: #60a5fa;
-	}
-
-	.ann-item-badge.brush-badge {
-		color: #f87171;
-	}
-
-	.ann-item-time {
-		font-size: 11px;
-		color: #71717a;
-	}
-
-	.ann-item-quote {
-		margin: 0 0 6px;
-		padding: 3px 8px;
-		background: rgba(255, 255, 255, 0.05);
-		border-left: 2px solid #3b82f6;
-		font-size: 12px;
-		color: #cbd5e1;
-	}
-
-	.ann-item-text {
-		font-size: 13px;
-		color: #e4e4e7;
-		margin: 0 0 10px;
-		white-space: pre-wrap;
-	}
-
-	.ann-item-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-
-	.btn-delete {
-		background: transparent;
-		border: none;
-		color: #ef4444;
-		font-size: 11px;
-		cursor: pointer;
-	}
 
 	/* Loading & Error */
 	.loading-overlay,
@@ -1693,47 +904,19 @@
 	}
 
 	@media (max-width: 640px) {
-		.btn-label-desktop {
-			display: none;
-		}
+
 		/* One 56px row cannot hold the filename plus every control on a phone,
 		   so let the header grow into rows: the file identity takes the first
 		   row, the controls the second, and the controls scroll sideways rather
 		   than compress if they still do not fit. */
-		.word-header {
-			height: auto;
-			flex-wrap: wrap;
-			align-items: flex-start;
-			row-gap: 8px;
-			padding: 8px 12px;
-		}
-		.file-meta {
-			flex: 1 1 100%;
-		}
-		.file-name {
-			max-width: none;
-		}
-		.center-controls,
-		.toolbar-actions {
-			max-width: 100%;
-			overflow-x: auto;
-			scrollbar-width: none;
-		}
-		.center-controls::-webkit-scrollbar,
-		.toolbar-actions::-webkit-scrollbar {
-			display: none;
-		}
+
 	}
 
 	/* Print styles */
 	@media print {
-		.word-header,
 		.floating-selection-bar,
-		.composer-popup,
-		.detail-card,
-		.modal-wrapper,
-		.notice-toast,
-		.word-drawing-canvas {
+	.notice-toast,
+	.word-drawing-canvas {
 			display: none !important;
 		}
 		.word-review-container,

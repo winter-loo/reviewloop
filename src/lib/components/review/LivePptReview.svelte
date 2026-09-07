@@ -1,6 +1,14 @@
 <script lang="ts">
+ import nextIcon from '$lib/assets/review-icons/next.svg?url';
+ import prevIcon from '$lib/assets/review-icons/prev.svg?url';
 	import { onMount, tick } from 'svelte';
-	import { formatFileSize } from '$lib/review/fileSize';
+	import { reviewViewport, reviewWidth } from '$lib/review/visualViewport';
+	import './mobile-review.css';
+	import ReviewHeader from './ReviewHeader.svelte';
+	import ReviewToolbar from './ReviewToolbar.svelte';
+	import ReviewComposer from './ReviewComposer.svelte';
+	import ReviewComments from './ReviewComments.svelte';
+	import ReviewDetail from './ReviewDetail.svelte';
 
 	interface Props {
 		data: {
@@ -33,11 +41,11 @@
 	};
 
 	const BRUSH_COLORS = [
-		{ name: '红色', value: '#ef4444' },
-		{ name: '橙黄', value: '#f59e0b' },
-		{ name: '蓝色', value: '#3b82f6' },
-		{ name: '绿色', value: '#10b981' },
-		{ name: '紫色', value: '#a855f7' },
+		{ name: '红色', value: '#e54b4b' },
+		{ name: '橙黄', value: '#e99821' },
+		{ name: '蓝色', value: '#2563eb' },
+		{ name: '绿色', value: '#159b79' },
+		{ name: '紫色', value: '#9364d8' },
 		{ name: '白色', value: '#ffffff' }
 	];
 
@@ -61,11 +69,12 @@
 
 	// Annotation mode
 	let annotationMode = $state(false);
-	let brushColor = $state('#ef4444');
+	let brushColor = $state('#e54b4b');
 	let brushSize = $state(6);
 	let isDrawing = $state(false);
 	let currentStroke = $state<Stroke | null>(null);
 	let draftStrokes = $state<Stroke[]>([]);
+	let composingBrush = $state(false);
 	let draftComment = $state('');
 
 	let annotations = $state<PptAnnotation[]>([]);
@@ -81,7 +90,6 @@
 	let drawingCanvas = $state<HTMLCanvasElement | null>(null);
 	let wrapperElement = $state<HTMLDivElement | null>(null);
 	let stageElement = $state<HTMLElement | null>(null);
-	let composerTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	// Zoom & Pan state
 	let zoom = $state(1);
@@ -108,6 +116,7 @@
 	const storageKey = $derived(`reviewloop:live-ppt:${data.token}`);
 
 	onMount(() => {
+		showListModal = window.matchMedia('(min-width: 1100px)').matches;
 		try {
 			const saved = localStorage.getItem(storageKey);
 			if (saved) {
@@ -203,16 +212,16 @@
 		const nativeH = viewer?.slideHeight || 540;
 		const aspectRatio = nativeW / nativeH;
 
-		let targetW = stageW - 48;
+		let targetW = stageW - 32;
 		let targetH = targetW / aspectRatio;
 
-		if (targetH > stageH - 48) {
-			targetH = stageH - 48;
+		if ((rotated || viewW > 768) && targetH > stageH - 32) {
+			targetH = stageH - 32;
 			targetW = targetH * aspectRatio;
 		}
 
-		slideWidth = Math.max(320, Math.floor(targetW));
-		slideHeight = Math.max(180, Math.floor(targetH));
+		slideWidth = Math.max(1, Math.floor(targetW));
+		slideHeight = Math.max(1, Math.floor(targetH));
 	}
 
 	/**
@@ -328,7 +337,7 @@
 	}
 
 	function clampPan() {
-		if (!stageElement || zoom <= 1.02) {
+		if (!stageElement || (zoom <= 1.02 && slideHeight <= stageElement.clientHeight - 32)) {
 			panX = 0;
 			panY = 0;
 			return;
@@ -397,7 +406,9 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		if (document.querySelector('dialog[open]')) return;
 		if (
+			event.target instanceof HTMLButtonElement ||
 			event.target instanceof HTMLInputElement ||
 			event.target instanceof HTMLTextAreaElement ||
 			(event.target instanceof HTMLElement && event.target.isContentEditable)
@@ -414,8 +425,8 @@
 			event.preventDefault();
 			goToPrev();
 		} else if (event.key === 'Escape') {
-			if (draftStrokes.length > 0) {
-				cancelDraft();
+			if (composingBrush) {
+				composingBrush = false;
 			} else if (showListModal) {
 				showListModal = false;
 			} else if (zoom > 1.05) {
@@ -472,7 +483,7 @@
 				return;
 			}
 
-			if (!annotationMode && zoom > 1.05) {
+			if (!annotationMode && (zoom > 1.05 || slideHeight > (stageElement?.clientHeight ?? 0) - 32)) {
 				isPanning = true;
 				e.preventDefault();
 			}
@@ -524,7 +535,7 @@
 	function handleStageTouchEnd(e: TouchEvent) {
 		if (isPinching && e.touches.length < 2) {
 			isPinching = false;
-			if (zoom <= 1.05) resetZoom(true);
+			if (zoom <= 1.05 && slideHeight <= (stageElement?.clientHeight ?? 0) - 32) resetZoom(true);
 		}
 		if (isPanning && e.touches.length === 0) {
 			isPanning = false;
@@ -549,7 +560,7 @@
 			e.preventDefault();
 			const zoomFactor = Math.exp(-e.deltaY * 0.008);
 			applyZoomAtPoint(zoom * zoomFactor, e.clientX, e.clientY);
-		} else if (zoom > 1.02) {
+		} else if (zoom > 1.02 || slideHeight > (stageElement?.clientHeight ?? 0) - 32) {
 			e.preventDefault();
 			panX -= e.deltaX;
 			panY -= e.deltaY;
@@ -648,7 +659,6 @@
 			draftStrokes = [...draftStrokes, currentStroke];
 			currentStroke = null;
 			redrawDraftCanvas();
-			tick().then(() => composerTextarea?.focus());
 		}
 	}
 
@@ -733,6 +743,7 @@
 	}
 
 	function cancelDraft() {
+		composingBrush = false;
 		draftStrokes = [];
 		draftComment = '';
 		currentStroke = null;
@@ -756,7 +767,8 @@
 
 		const next = [...annotations, annotation];
 		persistAnnotations(next);
-		selectedAnnotationId = annotation.id;
+		selectedAnnotationId = null;
+		annotationMode = false;
 		cancelDraft();
 		showNotice('已保存标注');
 		return annotation;
@@ -833,7 +845,7 @@
 				const bx = ann.badgePosition.x * baseW;
 				const by = ann.badgePosition.y * baseH;
 				ctx.save();
-				ctx.fillStyle = '#ef4444';
+				ctx.fillStyle = '#e54b4b';
 				ctx.beginPath();
 				ctx.arc(bx, by, 14, 0, Math.PI * 2);
 				ctx.fill();
@@ -872,162 +884,21 @@
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<div class="ppt-review-container">
+<div class="ppt-review-container live-review" class:review-comments-open={showListModal} class:review-painting={annotationMode} use:reviewViewport>
 	<!-- Top Navigation & Toolbar -->
-	<header class="ppt-header">
-		<div class="file-meta">
-			<span class="file-icon">📊</span>
-			<div class="file-text">
-				<strong class="file-name" title={data.filename}>{data.filename}</strong>
-				<span class="file-sub">PowerPoint · {formatFileSize(data.size)} · 共 {totalSlides} 页</span>
-			</div>
-		</div>
-
-		<!-- Slide Nav Controls -->
-		<div class="slide-nav-controls">
-			<button
-				type="button"
-				class="nav-btn"
-				onclick={goToPrev}
-				disabled={currentIndex === 0 || isLoading}
-				title="上一页 (Left Arrow / PageUp)"
-			>
-				‹
-			</button>
-			<div class="slide-nav-pill">
-				<span>第</span>
-				<input
-					type="number"
-					min="1"
-					max={totalSlides}
-					value={currentIndex + 1}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') {
-							const val = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-							if (!isNaN(val)) goToSlide(val - 1);
-						}
-					}}
-					onblur={(e) => {
-						const val = parseInt(e.currentTarget.value, 10);
-						if (!isNaN(val)) goToSlide(val - 1);
-					}}
-				/>
-				<span>/ {totalSlides} 页</span>
-			</div>
-			<button
-				type="button"
-				class="nav-btn"
-				onclick={goToNext}
-				disabled={currentIndex >= totalSlides - 1 || isLoading}
-				title="下一页 (Right Arrow / PageDown / Space)"
-			>
-				›
-			</button>
-		</div>
-
-		<!-- Right Actions Toolbar -->
-		<div class="toolbar-actions">
-			{#if annotationMode}
-				<div class="brush-palette" role="toolbar" aria-label="画笔调色盘">
-					<div class="color-picker">
-						{#each BRUSH_COLORS as color}
-							<button
-								type="button"
-								class="color-dot"
-								class:selected={brushColor === color.value}
-								style="background-color: {color.value}"
-								title={color.name}
-								onclick={() => (brushColor = color.value)}
-							></button>
-						{/each}
-					</div>
-					<div class="size-picker">
-						{#each BRUSH_SIZES as sz}
-							<button
-								type="button"
-								class="size-pill"
-								class:selected={brushSize === sz.value}
-								onclick={() => (brushSize = sz.value)}
-							>
-								{sz.name}
-							</button>
-						{/each}
-					</div>
-					<div class="action-divider"></div>
-					<button
-						type="button"
-						class="mini-btn"
-						onclick={undoLastStroke}
-						disabled={draftStrokes.length === 0}
-						title="撤销最后一笔"
-					>
-						↩
-					</button>
-					<button
-						type="button"
-						class="mini-btn"
-						onclick={cancelDraft}
-						disabled={draftStrokes.length === 0}
-						title="清空未保存画笔"
-					>
-						✕
-					</button>
-				</div>
-			{/if}
-
-			{#if rotationHelps}
-				<button
-					class="tool-btn"
-					class:active={rotated}
-					type="button"
-					onclick={toggleRotation}
-					title={rotated ? '恢复正向显示' : '横向显示，充分利用竖屏空间'}
-				>
-					<span class="btn-icon">⟳</span>
-					<span class="btn-label-desktop">{rotated ? '恢复方向' : '横向铺满'}</span>
-				</button>
-			{/if}
-
-			<button
-				class="tool-btn"
-				class:active={annotationMode}
-				type="button"
-				onclick={() => {
-					annotationMode = !annotationMode;
-					if (!annotationMode && draftStrokes.length > 0) cancelDraft();
-				}}
-			>
-				<span class="btn-icon">🎨</span>
-				<span>{annotationMode ? '退出标注' : '画笔标注'}</span>
-			</button>
-
-			<button
-				class="tool-btn badge-btn"
-				type="button"
-				onclick={() => (showListModal = true)}
-				title="查看所有标注"
-			>
-				<span class="btn-icon">💬</span>
-				<span>标注 ({totalAnnotationCount})</span>
-			</button>
-
-			<button
-				class="tool-btn export-btn"
-				type="button"
-				onclick={exportAnnotatedSlide}
-				disabled={isLoading}
-				title="导出当前幻灯片及标注为 PNG"
-			>
-				<span class="btn-icon">📥</span>
-				<span class="btn-label-desktop">导出当前页</span>
-			</button>
-		</div>
-	</header>
+	<ReviewHeader filename={data.filename} actions={[{ label: '导出当前页 PNG', run: exportAnnotatedSlide, disabled: isLoading }, { label: '旋转幻灯片', run: toggleRotation }, { label: '放大', run: () => applyZoomDelta(0.5) }, { label: '缩小', run: () => applyZoomDelta(-0.5) }]} hasDraft={draftStrokes.length > 0} ondiscard={cancelDraft}>
+<div class="review-pagination">
+   <button type="button" aria-label="上一页" onclick={goToPrev} disabled={currentIndex === 0 || isLoading}><img src={prevIcon} alt="" width="20" height="20" /></button>
+   <label><input aria-label="页码" type="number" min="1" max={totalSlides} value={currentIndex + 1} onkeydown={(e) => { if(e.key==='Enter') e.currentTarget.blur(); }} onblur={(e) => { const n = Number(e.currentTarget.value); if(Number.isInteger(n) && n >= 1 && n <= totalSlides) goToSlide(n-1); e.currentTarget.value=String(currentIndex+1); }} /><span>/ {totalSlides} 页</span></label>
+   <button type="button" aria-label="下一页" onclick={goToNext} disabled={currentIndex >= totalSlides - 1 || isLoading}><img src={nextIcon} alt="" width="20" height="20" /></button>
+  </div><button class="review-fit" type="button" onclick={() => resetZoom(true)}>适合宽度</button>
+</ReviewHeader>
 
 	<!-- Main Presentation Stage -->
-	<main
+	<main use:reviewWidth={handleResize}
 		class="ppt-stage"
 		class:drawing-mode={annotationMode}
+		class:is-rotated={rotated}
 		class:space-grabbing={isSpacePressed}
 		bind:this={stageElement}
 	>
@@ -1108,7 +979,7 @@
 			{#if annotationMode}
 				<canvas
 					bind:this={drawingCanvas}
-					class="drawing-canvas"
+					class="drawing-canvas" style:pointer-events={annotationMode ? "auto" : "none"}
 					onpointerdown={handlePointerDown}
 					onpointermove={handlePointerMove}
 					onpointerup={handlePointerUp}
@@ -1140,164 +1011,29 @@
 		{/if}
 
 		<!-- Floating Zoom Controls Pill -->
-		<div class="zoom-controls">
-			<button
-				type="button"
-				class="zoom-btn"
-				onclick={() => applyZoomDelta(-0.5)}
-				disabled={zoom <= 1.02}
-				title="缩小 (-)"
-			>
-				-
-			</button>
-			<button
-				type="button"
-				class="zoom-level-btn"
-				onclick={() => resetZoom(true)}
-				title="重置为 100% (快捷键 0)"
-			>
-				{Math.round(zoom * 100)}%
-			</button>
-			<button
-				type="button"
-				class="zoom-btn"
-				onclick={() => applyZoomDelta(0.5)}
-				disabled={zoom >= 5}
-				title="放大 (+)"
-			>
-				+
-			</button>
-			{#if zoom > 1.05}
-				<button type="button" class="zoom-reset-btn" onclick={() => resetZoom(true)} title="复位">
-					重置
-				</button>
-			{/if}
-		</div>
 	</main>
+ <ReviewToolbar paint={annotationMode} bind:color={brushColor} bind:size={brushSize} colors={BRUSH_COLORS} sizes={BRUSH_SIZES} count={totalAnnotationCount} draftCount={draftStrokes.length} comments={showListModal} disabled={isLoading}
+  onbrowse={() => { annotationMode = false; showListModal=false; }} onpaint={() => { annotationMode = true; showListModal=false; selectedAnnotationId=null; }}
+  oncomments={() => { showListModal = !showListModal; }} onfinish={() => { composingBrush=true; }} onundo={undoLastStroke} />
 
 	<!-- Draft Comment Composer Popup -->
-	{#if draftStrokes.length > 0}
-		<div class="composer-popup">
-			<div class="composer-header">
-				<span class="composer-title">✏️ 新建画笔标注</span>
-				<span class="composer-sub">已绘制 {draftStrokes.length} 笔</span>
-			</div>
-			<textarea
-				bind:this={composerTextarea}
-				bind:value={draftComment}
-				placeholder="填写关于该幻灯片的意见或批注..."
-				rows="3"
-				onkeydown={(e) => {
-					if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-						e.preventDefault();
-						saveDraftAnnotation();
-					} else if (e.key === 'Escape') {
-						e.preventDefault();
-						cancelDraft();
-					}
-				}}
-			></textarea>
-			<div class="composer-actions">
-				<button type="button" class="btn-secondary" onclick={cancelDraft}>放弃</button>
-				<button type="button" class="btn-primary" onclick={saveDraftAnnotation}>保存标注</button>
-			</div>
-		</div>
-	{/if}
+
+ {#if draftStrokes.length > 0 && composingBrush}
+  <ReviewComposer context={`第 ${currentIndex+1} 页 · ${draftStrokes.length} 条笔画`} bind:body={draftComment} onclose={() => composingBrush=false} onsave={saveDraftAnnotation} />
+ {/if}
 
 	<!-- Selected Annotation Detail Card -->
 	{#if selectedAnnotationId}
-		{@const selectedAnn = annotations.find((a) => a.id === selectedAnnotationId)}
-		{#if selectedAnn}
-			<div class="detail-card">
-				<div class="detail-header">
-					<div class="detail-title">
-						<span class="detail-badge">
-							第 {selectedAnn.slideIndex + 1} 页
-						</span>
-						<span class="detail-time">
-							{new Date(selectedAnn.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-						</span>
-					</div>
-					<button
-						type="button"
-						class="close-detail-btn"
-						onclick={() => (selectedAnnotationId = null)}
-					>
-						✕
-					</button>
-				</div>
-				<p class="detail-body">
-					{selectedAnn.body || '（无附注文字）'}
-				</p>
-				<div class="detail-footer">
-					<button
-						type="button"
-						class="delete-ann-btn"
-						onclick={() => deleteAnnotation(selectedAnn.id)}
-					>
-						删除此标注
-					</button>
-				</div>
-			</div>
-		{/if}
-	{/if}
+  {@const selectedAnn = annotations.find(a => a.id === selectedAnnotationId)}
+  {#if selectedAnn}
+   <ReviewDetail anchor={`第 ${selectedAnn.slideIndex + 1} 页 · 画笔标注`} body={selectedAnn.body} createdAt={selectedAnn.createdAt} quote={''} onclose={() => selectedAnnotationId=null} ondelete={() => deleteAnnotation(selectedAnn.id)} onall={() => { selectedAnnotationId=null; showListModal=true; }} />
+  {/if}
+ {/if}
 
 	<!-- All Annotations Modal -->
-	{#if showListModal}
-		<div class="modal-wrapper">
-			<button
-				class="modal-backdrop"
-				type="button"
-				aria-label="关闭标注列表"
-				onclick={() => (showListModal = false)}
-			></button>
-			<div class="modal-content" role="dialog" aria-modal="true" aria-label="全部幻灯片标注">
-				<div class="modal-header">
-					<h3>全部幻灯片标注 ({totalAnnotationCount})</h3>
-					<button type="button" class="close-btn" onclick={() => (showListModal = false)}>✕</button>
-				</div>
-				<div class="modal-body">
-					{#if annotations.length === 0}
-						<div class="empty-list">
-							<p>暂无任何标注。开启上方「画笔标注」即可在幻灯片上绘制圈选！</p>
-						</div>
-					{:else}
-						<div class="ann-list">
-							{#each annotations as ann, idx (ann.id)}
-								<div class="ann-item" class:is-current-slide={ann.slideIndex === currentIndex}>
-									<div class="ann-item-header">
-										<span class="ann-item-badge">#{idx + 1} 第 {ann.slideIndex + 1} 页</span>
-										<span class="ann-item-time">{new Date(ann.createdAt).toLocaleString()}</span>
-									</div>
-									<p class="ann-item-text">{ann.body || '（画笔圈注，未填写附注）'}</p>
-									<div class="ann-item-actions">
-										<button
-											type="button"
-											class="btn-jump"
-											onclick={() => {
-												goToSlide(ann.slideIndex);
-												selectedAnnotationId = ann.id;
-												showListModal = false;
-											}}
-										>
-											跳转到该页
-										</button>
-										<button
-											type="button"
-											class="btn-delete"
-											onclick={() => deleteAnnotation(ann.id)}
-										>
-											删除
-										</button>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</div>
-			</div>
-		</div>
-	{/if}
+ {#if showListModal}
+ <ReviewComments entries={annotations.map(a => ({ id:a.id, anchor:`第 ${a.slideIndex+1} 页 · 画笔标注`, body:a.body, createdAt:a.createdAt }))} onclose={() => showListModal=false} ondelete={deleteAnnotation} onlocate={async (id) => { const a=annotations.find(a=>a.id===id); if(a) { await goToSlide(a.slideIndex); selectedAnnotationId=id; showListModal=false; } }}></ReviewComments>
+ {/if}
 
 	<!-- Notice Toast -->
 	{#if notice}
@@ -1319,228 +1055,10 @@
 	}
 
 	/* Top Header */
-	.ppt-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		height: 56px;
-		padding: 0 16px;
-		background: rgba(18, 18, 20, 0.95);
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-		backdrop-filter: blur(12px);
-		z-index: 30;
-		flex-shrink: 0;
-	}
-
-	.ppt-header button {
-		white-space: nowrap;
-	}
-
-	.file-meta {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-width: 0;
-		/* Filename is the only thing allowed to give way; controls keep
-		   their intrinsic width so labels never compress to one glyph
-		   per line and render as vertical strips. */
-		flex: 1 1 auto;
-	}
-
-	.file-icon {
-		font-size: 20px;
-	}
-
-	.file-text {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	.file-name {
-		font-size: 13px;
-		font-weight: 600;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 240px;
-	}
-
-	.file-sub {
-		font-size: 11px;
-		color: #a1a1aa;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
 
 	/* Slide Navigation */
-	.slide-nav-controls {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-shrink: 0;
-	}
-
-	.nav-btn {
-		width: 28px;
-		height: 28px;
-		border-radius: 6px;
-		background: rgba(255, 255, 255, 0.08);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		color: #ffffff;
-		font-size: 18px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-
-	.nav-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.16);
-	}
-
-	.nav-btn:disabled {
-		opacity: 0.2;
-		cursor: not-allowed;
-	}
-
-	.slide-nav-pill {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		background: rgba(255, 255, 255, 0.06);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 6px;
-		padding: 2px 8px;
-		font-size: 12px;
-		color: #d4d4d8;
-	}
-
-	.slide-nav-pill input {
-		width: 38px;
-		background: transparent;
-		border: none;
-		color: #ffffff;
-		font-size: 12px;
-		font-weight: 600;
-		text-align: center;
-		outline: none;
-	}
 
 	/* Right Actions */
-	.toolbar-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-shrink: 0;
-	}
-
-	.brush-palette {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		background: rgba(255, 255, 255, 0.06);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		padding: 3px 8px;
-		border-radius: 8px;
-	}
-
-	.color-picker {
-		display: flex;
-		gap: 5px;
-	}
-
-	.color-dot {
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		border: 2px solid transparent;
-		cursor: pointer;
-		padding: 0;
-		transition: transform 0.1s;
-	}
-
-	.color-dot.selected {
-		border-color: #ffffff;
-		transform: scale(1.25);
-	}
-
-	.size-picker {
-		display: flex;
-		gap: 3px;
-	}
-
-	.size-pill {
-		background: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		color: #a1a1aa;
-		border-radius: 4px;
-		padding: 1px 6px;
-		font-size: 11px;
-		cursor: pointer;
-	}
-
-	.size-pill.selected {
-		background: rgba(255, 255, 255, 0.2);
-		color: #ffffff;
-		border-color: #ffffff;
-	}
-
-	.action-divider {
-		width: 1px;
-		height: 16px;
-		background: rgba(255, 255, 255, 0.15);
-	}
-
-	.mini-btn {
-		background: transparent;
-		border: none;
-		color: #d4d4d8;
-		font-size: 13px;
-		cursor: pointer;
-		padding: 2px 4px;
-		border-radius: 4px;
-	}
-
-	.mini-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.15);
-		color: #fff;
-	}
-
-	.mini-btn:disabled {
-		opacity: 0.2;
-		cursor: not-allowed;
-	}
-
-	.tool-btn {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		height: 32px;
-		padding: 0 12px;
-		border-radius: 8px;
-		background: rgba(255, 255, 255, 0.08);
-		border: 1px solid rgba(255, 255, 255, 0.12);
-		color: #e4e4e7;
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.tool-btn:hover {
-		background: rgba(255, 255, 255, 0.16);
-		color: #ffffff;
-	}
-
-	.tool-btn.active {
-		background: #2563eb;
-		border-color: #3b82f6;
-		color: #ffffff;
-		box-shadow: 0 0 12px rgba(37, 99, 235, 0.4);
-	}
 
 	/* Stage */
 	.ppt-stage {
@@ -1617,11 +1135,11 @@
 
 	.badge-marker {
 		cursor: pointer;
-		transition: transform 0.15s ease;
+		transition: filter 0.15s ease;
 	}
 
 	.badge-marker:hover {
-		transform: scale(1.2);
+		filter: drop-shadow(0 2px 5px rgba(37, 99, 235, 0.5));
 	}
 
 	.badge-bg {
@@ -1684,360 +1202,12 @@
 	}
 
 	/* Zoom Controls */
-	.zoom-controls {
-		position: absolute;
-		right: 16px;
-		bottom: 16px;
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		background: rgba(24, 24, 27, 0.88);
-		backdrop-filter: blur(14px);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 999px;
-		padding: 4px;
-		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-		z-index: 25;
-	}
-
-	.zoom-btn {
-		width: 28px;
-		height: 28px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: 0;
-		border-radius: 50%;
-		color: #e4e4e7;
-		font-size: 16px;
-		cursor: pointer;
-	}
-
-	.zoom-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.15);
-		color: #fff;
-	}
-
-	.zoom-btn:disabled {
-		opacity: 0.3;
-		cursor: not-allowed;
-	}
-
-	.zoom-level-btn {
-		min-width: 48px;
-		height: 28px;
-		padding: 0 6px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: 0;
-		border-radius: 6px;
-		color: #e4e4e7;
-		font-size: 12px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.zoom-level-btn:hover {
-		background: rgba(255, 255, 255, 0.1);
-	}
-
-	.zoom-reset-btn {
-		height: 24px;
-		padding: 0 8px;
-		background: rgba(59, 130, 246, 0.2);
-		border: 1px solid rgba(59, 130, 246, 0.4);
-		border-radius: 999px;
-		color: #93c5fd;
-		font-size: 11px;
-		cursor: pointer;
-	}
 
 	/* Composer Popup */
-	.composer-popup {
-		position: absolute;
-		bottom: 24px;
-		left: 50%;
-		transform: translateX(-50%);
-		width: 90%;
-		max-width: 420px;
-		background: rgba(24, 24, 27, 0.95);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 12px;
-		padding: 14px;
-		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(16px);
-		z-index: 35;
-	}
-
-	.composer-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 8px;
-	}
-
-	.composer-title {
-		font-size: 13px;
-		font-weight: 600;
-	}
-
-	.composer-sub {
-		font-size: 11px;
-		color: #a1a1aa;
-	}
-
-	.composer-popup textarea {
-		width: 100%;
-		box-sizing: border-box;
-		background: rgba(0, 0, 0, 0.4);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 6px;
-		padding: 8px;
-		color: #ffffff;
-		font-size: 13px;
-		resize: vertical;
-		outline: none;
-	}
-
-	.composer-popup textarea:focus {
-		border-color: #3b82f6;
-	}
-
-	.composer-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		margin-top: 10px;
-	}
-
-	.btn-secondary {
-		padding: 6px 12px;
-		background: rgba(255, 255, 255, 0.1);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 6px;
-		color: #d4d4d8;
-		font-size: 12px;
-		cursor: pointer;
-	}
-
-	.btn-primary {
-		padding: 6px 14px;
-		background: #2563eb;
-		border: none;
-		border-radius: 6px;
-		color: #ffffff;
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-	}
 
 	/* Detail Card */
-	.detail-card {
-		position: absolute;
-		top: 68px;
-		right: 16px;
-		width: 280px;
-		background: rgba(24, 24, 27, 0.95);
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 10px;
-		padding: 12px;
-		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-		backdrop-filter: blur(14px);
-		z-index: 35;
-	}
-
-	.detail-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 8px;
-	}
-
-	.detail-badge {
-		background: rgba(239, 68, 68, 0.2);
-		color: #fca5a5;
-		font-size: 11px;
-		font-weight: 600;
-		padding: 2px 6px;
-		border-radius: 4px;
-	}
-
-	.detail-time {
-		font-size: 11px;
-		color: #a1a1aa;
-		margin-left: 6px;
-	}
-
-	.close-detail-btn {
-		background: transparent;
-		border: none;
-		color: #a1a1aa;
-		cursor: pointer;
-		font-size: 12px;
-	}
-
-	.detail-body {
-		font-size: 13px;
-		color: #f4f4f5;
-		margin: 0 0 10px;
-		white-space: pre-wrap;
-	}
-
-	.detail-footer {
-		display: flex;
-		justify-content: flex-end;
-	}
-
-	.delete-ann-btn {
-		background: transparent;
-		border: none;
-		color: #ef4444;
-		font-size: 11px;
-		cursor: pointer;
-		padding: 0;
-	}
 
 	/* Modal */
-	.modal-wrapper {
-		position: fixed;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 50;
-	}
-
-	.modal-backdrop {
-		position: absolute;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(4px);
-		border: none;
-		cursor: pointer;
-		padding: 0;
-		margin: 0;
-		width: 100%;
-		height: 100%;
-	}
-
-	.modal-content {
-		position: relative;
-		z-index: 1;
-		width: 90%;
-		max-width: 520px;
-		max-height: 80vh;
-		background: #18181b;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 12px;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		box-shadow: 0 25px 50px rgba(0, 0, 0, 0.7);
-	}
-
-	.modal-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 14px 18px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-	}
-
-	.modal-header h3 {
-		margin: 0;
-		font-size: 15px;
-	}
-
-	.close-btn {
-		background: transparent;
-		border: none;
-		color: #a1a1aa;
-		font-size: 16px;
-		cursor: pointer;
-	}
-
-	.modal-body {
-		padding: 16px;
-		overflow-y: auto;
-		max-height: calc(80vh - 60px);
-	}
-
-	.empty-list {
-		text-align: center;
-		color: #a1a1aa;
-		padding: 30px 0;
-		font-size: 13px;
-	}
-
-	.ann-list {
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-	}
-
-	.ann-item {
-		background: rgba(255, 255, 255, 0.04);
-		border: 1px solid rgba(255, 255, 255, 0.08);
-		border-radius: 8px;
-		padding: 12px;
-	}
-
-	.ann-item.is-current-slide {
-		border-color: rgba(59, 130, 246, 0.4);
-		background: rgba(59, 130, 246, 0.05);
-	}
-
-	.ann-item-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 6px;
-	}
-
-	.ann-item-badge {
-		font-size: 11px;
-		font-weight: 600;
-		color: #60a5fa;
-	}
-
-	.ann-item-time {
-		font-size: 11px;
-		color: #71717a;
-	}
-
-	.ann-item-text {
-		font-size: 13px;
-		color: #e4e4e7;
-		margin: 0 0 10px;
-		white-space: pre-wrap;
-	}
-
-	.ann-item-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-
-	.btn-jump {
-		background: rgba(59, 130, 246, 0.2);
-		border: 1px solid rgba(59, 130, 246, 0.3);
-		color: #93c5fd;
-		border-radius: 4px;
-		padding: 3px 8px;
-		font-size: 11px;
-		cursor: pointer;
-	}
-
-	.btn-delete {
-		background: transparent;
-		border: none;
-		color: #ef4444;
-		font-size: 11px;
-		cursor: pointer;
-	}
 
 	/* Loading & Error */
 	.loading-overlay,
@@ -2098,9 +1268,7 @@
 	}
 
 	@media (max-width: 640px) {
-		.btn-label-desktop {
-			display: none;
-		}
+
 		/* The floating edge arrows overlap the page on a narrow screen and
 		   there is nothing to gain from them: the header carries prev/next
 		   and a horizontal swipe already changes page. */
@@ -2111,28 +1279,6 @@
 		   phone, so let the header grow into rows: file identity on the
 		   first, controls on the second, and controls scroll sideways
 		   rather than compress if they still do not fit. */
-		.ppt-header {
-			height: auto;
-			flex-wrap: wrap;
-			align-items: flex-start;
-			row-gap: 8px;
-			padding: 8px 12px;
-		}
-		.file-meta {
-			flex: 1 1 100%;
-		}
-		.file-name {
-			max-width: none;
-		}
-		.slide-nav-controls,
-		.toolbar-actions {
-			max-width: 100%;
-			overflow-x: auto;
-			scrollbar-width: none;
-		}
-		.slide-nav-controls::-webkit-scrollbar,
-		.toolbar-actions::-webkit-scrollbar {
-			display: none;
-		}
+
 	}
 </style>

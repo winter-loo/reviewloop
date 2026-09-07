@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { formatFileSize } from '$lib/review/fileSize';
+	import { reviewViewport } from '$lib/review/visualViewport';
+	import './mobile-review.css';
+	import { twoFingerPan } from '$lib/review/twoFingerPan';
+	import ReviewHeader from './ReviewHeader.svelte';
+	import ReviewToolbar from './ReviewToolbar.svelte';
+	import ReviewComposer from './ReviewComposer.svelte';
+	import ReviewComments from './ReviewComments.svelte';
+	import ReviewDetail from './ReviewDetail.svelte';
 	import * as XLSX from 'xlsx';
 
 	interface Props {
@@ -76,12 +83,12 @@
 	};
 
 	const BRUSH_COLORS = [
-		{ name: '红色', value: '#ef4444' },
-		{ name: '橙黄', value: '#f59e0b' },
-		{ name: '蓝色', value: '#3b82f6' },
-		{ name: '绿色', value: '#10b981' },
-		{ name: '紫色', value: '#a855f7' },
-		{ name: '墨黑', value: '#1e293b' }
+		{ name: '红色', value: '#e54b4b' },
+		{ name: '橙黄', value: '#e99821' },
+		{ name: '蓝色', value: '#2563eb' },
+		{ name: '绿色', value: '#159b79' },
+		{ name: '紫色', value: '#9364d8' },
+		{ name: '白色', value: '#ffffff' }
 	];
 
 	const BRUSH_SIZES = [
@@ -187,9 +194,10 @@
 
 	// Brush mode & drawing
 	let brushMode = $state(false);
-	let brushColor = $state('#ef4444');
+	let brushColor = $state('#e54b4b');
 	let brushSize = $state(6);
 	let isDrawing = $state(false);
+	let drawingPointerId: number | null = null;
 	let currentStroke = $state<Stroke | null>(null);
 	let draftStrokes = $state<Stroke[]>([]);
 
@@ -213,14 +221,13 @@
 	// DOM references
 	let tableContainer = $state<HTMLDivElement | null>(null);
 	let drawingCanvas = $state<HTMLCanvasElement | null>(null);
-	let cellComposerTextarea = $state<HTMLTextAreaElement | null>(null);
-	let brushComposerTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	let contentWidth = $state(1000);
 	let contentHeight = $state(800);
 	let gridTable = $state<HTMLTableElement | null>(null);
 
 	onMount(() => {
+		showListModal = window.matchMedia('(min-width: 1100px)').matches;
 		try {
 			const saved = localStorage.getItem(storageKey);
 			if (saved) {
@@ -395,7 +402,10 @@
 
 	function switchSheet(name: string) {
 		const idx = sheetNames.indexOf(name);
-		if (idx !== -1) {
+		if (idx === -1) return false;
+		if (idx !== activeSheetIndex) {
+			if (draftStrokes.length && !confirm('画笔草稿尚未保存，切换工作表将丢弃，是否继续？')) return false;
+			clearDraftStrokes();
 			activeSheetIndex = idx;
 			loadSheet(name);
 			if (brushMode) {
@@ -403,6 +413,7 @@
 				redrawDraftCanvas();
 			}
 		}
+		return true;
 	}
 
 	function handleResize() {
@@ -507,7 +518,7 @@
 		if (!selectedRange || !activeCell) return;
 		cellDraftBody = '';
 		showCellComposer = true;
-		tick().then(() => cellComposerTextarea?.focus());
+
 	}
 
 	function saveCellAnnotation() {
@@ -536,7 +547,8 @@
 		persistAnnotations(next);
 		showCellComposer = false;
 		cellDraftBody = '';
-		activeDetailAnnotation = newAnn;
+		activeDetailAnnotation = null;
+		brushMode = false;
 		showNotice(`已保存单元格 [${newAnn.cellRef}] 批注`);
 	}
 
@@ -545,26 +557,28 @@
 		brushMode = !brushMode;
 		if (brushMode) {
 			syncCanvasDimensions();
-			showNotice('已开启画笔标注，可在表格任意区域涂鸦');
+
 		} else {
-			draftStrokes = [];
+			isDrawing = false;
+			drawingPointerId = null;
+			currentStroke = null;
 			redrawDraftCanvas();
+
 		}
 	}
 
 	function getPointerPos(e: PointerEvent): Point | null {
-		if (!tableContainer) return null;
-		const rect = tableContainer.getBoundingClientRect();
-		// Account for container scroll
-		const scrollLeft = tableContainer.scrollLeft;
-		const scrollTop = tableContainer.scrollTop;
-		const x = (e.clientX - rect.left + scrollLeft) / zoom;
-		const y = (e.clientY - rect.top + scrollTop) / zoom;
+		if (!drawingCanvas) return null;
+		const rect = drawingCanvas.getBoundingClientRect();
+		const x = (e.clientX - rect.left) * drawingCanvas.width / rect.width;
+		const y = (e.clientY - rect.top) * drawingCanvas.height / rect.height;
 		return { x, y };
 	}
 
 	function handleCanvasPointerDown(e: PointerEvent) {
-		if (!brushMode || e.button !== 0 || !drawingCanvas) return;
+		if (!brushMode || e.button !== 0 || !e.isPrimary || !drawingCanvas || isDrawing) return;
+		e.preventDefault();
+		drawingPointerId = e.pointerId;
 		const pt = getPointerPos(e);
 		if (!pt) return;
 
@@ -580,7 +594,8 @@
 	}
 
 	function handleCanvasPointerMove(e: PointerEvent) {
-		if (!isDrawing || !currentStroke || !drawingCanvas) return;
+		if (!isDrawing || !currentStroke || !drawingCanvas || e.pointerId !== drawingPointerId) return;
+		e.preventDefault();
 		const pt = getPointerPos(e);
 		if (!pt) return;
 		currentStroke.points.push(pt);
@@ -588,13 +603,23 @@
 	}
 
 	function handleCanvasPointerUp(e: PointerEvent) {
-		if (!isDrawing) return;
+		if (!isDrawing || e.pointerId !== drawingPointerId) return;
 		isDrawing = false;
+		drawingPointerId = null;
+		if (drawingCanvas?.hasPointerCapture(e.pointerId)) drawingCanvas.releasePointerCapture(e.pointerId);
 		if (currentStroke && currentStroke.points.length > 0) {
 			draftStrokes = [...draftStrokes, currentStroke];
 			currentStroke = null;
 			redrawDraftCanvas();
 		}
+	}
+
+	function handleCanvasPointerCancel(e: PointerEvent) {
+		if (e.pointerId !== drawingPointerId) return;
+		isDrawing = false;
+		drawingPointerId = null;
+		currentStroke = null;
+		redrawDraftCanvas();
 	}
 
 	function drawLatestStrokeSegment() {
@@ -666,19 +691,22 @@
 	}
 
 	function clearDraftStrokes() {
+		showBrushComposer=false;
+		brushDraftComment='';
+		currentStroke=null;
+		isDrawing=false;
 		draftStrokes = [];
 		redrawDraftCanvas();
 	}
 
 	function openBrushComposer() {
 		if (draftStrokes.length === 0) return;
-		brushDraftComment = '';
 		showBrushComposer = true;
-		tick().then(() => brushComposerTextarea?.focus());
+
 	}
 
 	function saveBrushAnnotation() {
-		if (!brushDraftComment.trim() || draftStrokes.length === 0) return;
+		if (draftStrokes.length === 0) return;
 
 		// Determine badge position (first point of first stroke)
 		const firstPt = draftStrokes[0].points[0] ?? { x: 50, y: 50 };
@@ -699,7 +727,8 @@
 		showBrushComposer = false;
 		brushDraftComment = '';
 		redrawDraftCanvas();
-		activeDetailAnnotation = newAnn;
+		activeDetailAnnotation = null;
+		brushMode = false;
 		showNotice('已保存画笔标注');
 	}
 
@@ -740,10 +769,8 @@
 
 	// Jump to annotation location
 	function jumpToAnnotation(ann: ExcelAnnotation) {
+		if (ann.sheetName !== activeSheetName && !switchSheet(ann.sheetName)) return;
 		showListModal = false;
-		if (ann.sheetName !== activeSheetName) {
-			switchSheet(ann.sheetName);
-		}
 
 		activeDetailAnnotation = ann;
 
@@ -804,141 +831,29 @@
 	<meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<div class="excel-review-container">
+<div class="excel-review-container live-review" class:review-comments-open={showListModal} class:review-painting={brushMode} use:reviewViewport>
 	<!-- Top Navigation Header -->
-	<header class="excel-header">
-		<div class="file-meta">
-			<span class="file-icon">📊</span>
-			<div class="file-text">
-				<strong class="file-name" title={data.filename}>{data.filename}</strong>
-				<span class="file-sub">
-					{sheetNames.length} 个工作表 ·
-					{#if currentSheetData}
-						{currentSheetData.rowCount} 行 × {currentSheetData.colCount} 列 ·
+	<ReviewHeader filename={data.filename} actions={[{ label: '导出当前工作表 CSV', run: exportActiveSheetCsv }, { label: '导出批注 JSON', run: exportAnnotationsJson }, { label: '放大', run: zoomIn }, { label: '缩小', run: zoomOut }, { label: '重置缩放', run: zoomReset }]} hasDraft={draftStrokes.length > 0} ondiscard={clearDraftStrokes}>
+<div class="sheet-tabs" role="tablist" aria-label="工作表标签">
+			{#each sheetNames as name, idx}
+				{@const annCount = annotations.filter((a) => a.sheetName === name).length}
+				<button
+					type="button"
+					role="tab"
+					aria-selected={activeSheetIndex === idx}
+					class="sheet-tab"
+					class:active={activeSheetIndex === idx}
+					onclick={() => switchSheet(name)}
+				>
+					<span class="sheet-name">{name}</span>
+					{#if annCount > 0}
+						<span class="tab-ann-dot" title="{annCount} 条批注">{annCount}</span>
 					{/if}
-					{formatFileSize(data.size)}
-				</span>
-			</div>
+				</button>
+			{/each}
 		</div>
 
-		<div class="header-actions">
-			<!-- Mode Toggle -->
-			<div class="mode-toggles">
-				<button
-					type="button"
-					class="toggle-btn"
-					class:active={!brushMode}
-					onclick={() => { if (brushMode) toggleBrushMode(); }}
-					title="表格选择与单元格批注"
-				>
-					<span class="icon">⊞</span> 表格模式
-				</button>
-				<button
-					type="button"
-					class="toggle-btn"
-					class:active={brushMode}
-					onclick={toggleBrushMode}
-					title="画笔自由涂鸦与标注"
-				>
-					<span class="icon">✎</span> 画笔标注
-				</button>
-			</div>
-
-			<!-- Zoom Controls -->
-			<div class="zoom-controls">
-				<button type="button" onclick={zoomOut} title="缩小" disabled={zoom <= 0.6}>−</button>
-				<button type="button" class="zoom-val" onclick={zoomReset} title="重置缩放">{Math.round(zoom * 100)}%</button>
-				<button type="button" onclick={zoomIn} title="放大" disabled={zoom >= 2.0}>+</button>
-			</div>
-
-			<!-- Annotations Drawer Button -->
-			<button
-				type="button"
-				class="ann-btn"
-				class:has-ann={totalAnnotationCount > 0}
-				onclick={() => { showListModal = true; }}
-			>
-				<span>批注清单</span>
-				<span class="ann-badge">{totalAnnotationCount}</span>
-			</button>
-		</div>
-	</header>
-
-	<!-- Paintbrush Floating Toolbar -->
-	{#if brushMode}
-		<div class="brush-toolbar" role="toolbar" aria-label="画笔工具栏">
-			<div class="color-picker">
-				{#each BRUSH_COLORS as color}
-					<button
-						type="button"
-						class="color-dot"
-						class:active={brushColor === color.value}
-						style:background-color={color.value}
-						title={color.name}
-						aria-label={color.name}
-						onclick={() => (brushColor = color.value)}
-					></button>
-				{/each}
-			</div>
-
-			<div class="divider"></div>
-
-			<div class="size-picker">
-				{#each BRUSH_SIZES as size}
-					<button
-						type="button"
-						class="size-dot"
-						class:active={brushSize === size.value}
-						title={`笔触: ${size.name}`}
-						onclick={() => (brushSize = size.value)}
-					>
-						<span style:width="{size.value + 4}px" style:height="{size.value + 4}px"></span>
-					</button>
-				{/each}
-			</div>
-
-			<div class="divider"></div>
-
-			<button
-				type="button"
-				class="tool-btn"
-				disabled={draftStrokes.length === 0}
-				onclick={undoLastDraftStroke}
-				title="撤销上一笔"
-			>
-				↶ 撤销
-			</button>
-
-			<button
-				type="button"
-				class="tool-btn"
-				disabled={draftStrokes.length === 0}
-				onclick={clearDraftStrokes}
-				title="清空当前草稿"
-			>
-				清空
-			</button>
-
-			{#if draftStrokes.length > 0}
-				<button
-					type="button"
-					class="save-draft-btn"
-					onclick={openBrushComposer}
-				>
-					保存批注 ({draftStrokes.length})
-				</button>
-			{/if}
-
-			<button
-				type="button"
-				class="close-brush-btn"
-				onclick={toggleBrushMode}
-				title="完成画笔标注"
-			>
-				✕ 退出画笔
-			</button>
-		</div>
-	{/if}
+</ReviewHeader>
 
 	<!-- Formula Bar & Status Strip -->
 	<div class="formula-bar">
@@ -977,7 +892,7 @@
 			disabled={!selectedRange}
 			onclick={openCellComposer}
 		>
-			➕ 批注该区域
+			批注区域
 		</button>
 	</div>
 
@@ -1004,9 +919,9 @@
 			</div>
 		{:else if currentSheetData}
 			<div
-				class="table-scroll-container"
+				use:twoFingerPan={{ enabled: brushMode, zoom, min: 0.6, max: 2, onzoom: (value) => zoom=value, oncancel: () => { isDrawing=false; currentStroke=null; redrawDraftCanvas(); } }} class="table-scroll-container"
+				class:brush-active={brushMode}
 				bind:this={tableContainer}
-				onscroll={syncCanvasDimensions}
 			>
 				<div
 					class="sheet-content-wrapper"
@@ -1097,6 +1012,8 @@
 									role="button"
 									tabindex="0"
 									transform="translate({ann.badgePosition.x}, {ann.badgePosition.y})"
+									aria-label={`查看批注 ${idx + 1}`}
+									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeDetailAnnotation=ann; } }}
 									onclick={() => (activeDetailAnnotation = ann)}
 								>
 									<circle r="14" fill="#ef4444" stroke="#ffffff" stroke-width="2" />
@@ -1122,43 +1039,16 @@
 						onpointerdown={handleCanvasPointerDown}
 						onpointermove={handleCanvasPointerMove}
 						onpointerup={handleCanvasPointerUp}
-						onpointercancel={handleCanvasPointerUp}
+						onpointercancel={handleCanvasPointerCancel}
+						onlostpointercapture={handleCanvasPointerCancel}
 					></canvas>
 				</div>
 			</div>
 		{/if}
 	</main>
-
-	<!-- Sheet Tabs Bar (Excel Bottom Strip) -->
-	<footer class="excel-footer">
-		<div class="sheet-tabs" role="tablist" aria-label="工作表标签">
-			{#each sheetNames as name, idx}
-				{@const annCount = annotations.filter((a) => a.sheetName === name).length}
-				<button
-					type="button"
-					role="tab"
-					aria-selected={activeSheetIndex === idx}
-					class="sheet-tab"
-					class:active={activeSheetIndex === idx}
-					onclick={() => switchSheet(name)}
-				>
-					<span class="sheet-name">{name}</span>
-					{#if annCount > 0}
-						<span class="tab-ann-dot" title="{annCount} 条批注">{annCount}</span>
-					{/if}
-				</button>
-			{/each}
-		</div>
-
-		<div class="footer-actions">
-			<button type="button" class="footer-btn" onclick={exportActiveSheetCsv} title="导出当前表为 CSV">
-				导出当前表 CSV
-			</button>
-			<button type="button" class="footer-btn" onclick={exportAnnotationsJson} title="导出全部批注 JSON">
-				导出批注 JSON
-			</button>
-		</div>
-	</footer>
+ <ReviewToolbar paint={brushMode} bind:color={brushColor} bind:size={brushSize} colors={BRUSH_COLORS} sizes={BRUSH_SIZES} count={totalAnnotationCount} draftCount={draftStrokes.length} comments={showListModal} disabled={isLoading}
+  onbrowse={() => { if (brushMode) toggleBrushMode(); showListModal=false; }} onpaint={() => { if (!brushMode) toggleBrushMode(); showListModal=false; activeDetailAnnotation=null; }}
+  oncomments={() => { showListModal = !showListModal; }} onfinish={() => { showBrushComposer=true; }} onundo={undoLastDraftStroke} />
 
 	<!-- Notice Toast -->
 	{#if notice}
@@ -1167,218 +1057,24 @@
 		</div>
 	{/if}
 
-	<!-- Cell Annotation Composer Dialog -->
-	{#if showCellComposer && selectedRange && activeCell}
-		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-		<div class="modal-backdrop" onclick={() => (showCellComposer = false)}>
-			<div class="composer-modal" role="dialog" aria-modal="true" aria-label="添加单元格批注" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-				<div class="composer-header">
-					<h3>添加单元格批注</h3>
-					<button type="button" class="close-x-btn" onclick={() => (showCellComposer = false)}>✕</button>
-				</div>
+{#if showCellComposer && selectedRange && activeCell}
+ <ReviewComposer brush={false} context={`${activeSheetName} · ${selectedRange.ref}`} quote={activeCell.formula || activeCell.formatted} bind:body={cellDraftBody} onclose={() => showCellComposer=false} onsave={saveCellAnnotation} />
+ {/if}
 
-				<div class="cell-context-box">
-					<div class="ctx-tag">工作表: <b>{activeSheetName}</b> · 区域: <b>{selectedRange.ref}</b></div>
-					<div class="ctx-val">
-						当前值: <code
-							>{activeCell.uncachedFormula
-								? '(源文件未保存计算结果)'
-								: activeCell.formatted || '(空)'}</code
-						>
-						{#if activeCell.formula}
-							<span class="ctx-formula">公式: {activeCell.formula}</span>
-						{/if}
-					</div>
-				</div>
-
-				<textarea
-					bind:this={cellComposerTextarea}
-					bind:value={cellDraftBody}
-					rows="4"
-					placeholder="输入针对该单元格或区域的评审意见、修改建议…"
-				></textarea>
-
-				<div class="composer-footer">
-					<button type="button" class="btn-secondary" onclick={() => (showCellComposer = false)}>取消</button>
-					<button
-						type="button"
-						class="btn-primary"
-						disabled={!cellDraftBody.trim()}
-						onclick={saveCellAnnotation}
-					>
-						保存批注
-					</button>
-				</div>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Paint Annotation Composer Dialog -->
-	{#if showBrushComposer}
-		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-		<div class="modal-backdrop" onclick={() => (showBrushComposer = false)}>
-			<div class="composer-modal" role="dialog" aria-modal="true" aria-label="保存画笔标注" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-				<div class="composer-header">
-					<h3>保存画笔标注</h3>
-					<button type="button" class="close-x-btn" onclick={() => (showBrushComposer = false)}>✕</button>
-				</div>
-
-				<div class="cell-context-box">
-					<div class="ctx-tag">工作表: <b>{activeSheetName}</b> · 已绘制 <b>{draftStrokes.length}</b> 笔涂鸦</div>
-				</div>
-
-				<textarea
-					bind:this={brushComposerTextarea}
-					bind:value={brushDraftComment}
-					rows="4"
-					placeholder="写下关于这处画笔涂鸦的评审意见…"
-				></textarea>
-
-				<div class="composer-footer">
-					<button type="button" class="btn-secondary" onclick={() => (showBrushComposer = false)}>取消</button>
-					<button
-						type="button"
-						class="btn-primary"
-						disabled={!brushDraftComment.trim()}
-						onclick={saveBrushAnnotation}
-					>
-						保存并固定到图层
-					</button>
-				</div>
-			</div>
-		</div>
-	{/if}
-
+ {#if draftStrokes.length > 0 && showBrushComposer}
+  <ReviewComposer context={`${activeSheetName} · ${draftStrokes.length} 条笔画`} bind:body={brushDraftComment} onclose={() => showBrushComposer=false} onsave={saveBrushAnnotation} />
+ {/if}
 	<!-- Annotation Detail Popover / Card -->
 	{#if activeDetailAnnotation}
-		{@const detail = activeDetailAnnotation}
-		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-		<div class="modal-backdrop" onclick={() => (activeDetailAnnotation = null)}>
-			<div class="detail-card-modal" role="dialog" aria-modal="true" aria-label="批注详情" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-				<div class="detail-header">
-					<div class="detail-badge-title">
-						{#if detail.type === 'cell'}
-							<span class="tag-cell">单元格批注</span>
-							<strong>[{detail.sheetName}] {detail.cellRef}</strong>
-						{:else}
-							<span class="tag-paint">画笔标注</span>
-							<strong>[{detail.sheetName}] 自由涂鸦</strong>
-						{/if}
-					</div>
-					<button type="button" class="close-x-btn" onclick={() => (activeDetailAnnotation = null)}>✕</button>
-				</div>
-
-				{#if detail.type === 'cell' && detail.cellValue}
-					<div class="detail-quote">
-						<span>单元格取值:</span>
-						<code>{detail.cellValue}</code>
-					</div>
-				{/if}
-
-				<div class="detail-body">
-					{detail.body}
-				</div>
-
-				<div class="detail-meta">
-					<span>创建时间: {new Date(detail.createdAt).toLocaleString()}</span>
-				</div>
-
-				<div class="detail-actions">
-					<button
-						type="button"
-						class="btn-danger"
-						onclick={() => deleteAnnotation(detail.id)}
-					>
-						删除批注
-					</button>
-					<button
-						type="button"
-						class="btn-primary"
-						onclick={() => (activeDetailAnnotation = null)}
-					>
-						关闭
-					</button>
-				</div>
-			</div>
-		</div>
-	{/if}
+  {@const detail = activeDetailAnnotation}
+  <ReviewDetail anchor={`${detail.sheetName} · ${detail.type === 'cell' ? detail.cellRef : '画笔标注'}`} body={detail.body} createdAt={detail.createdAt} quote={detail.type === 'cell' ? detail.cellValue : ''} onclose={() => activeDetailAnnotation=null} ondelete={() => deleteAnnotation(detail.id)} onall={() => { activeDetailAnnotation=null; showListModal=true; }} />
+ {/if}
 
 	<!-- All Annotations Drawer -->
-	{#if showListModal}
-		{@const displayedList = filterCurrentSheetOnly ? currentSheetAnnotations : annotations}
-		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-		<div class="modal-backdrop" onclick={() => (showListModal = false)}>
-			<div class="drawer-panel" role="dialog" aria-modal="true" aria-label="表格评审批注清单" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-				<div class="drawer-header">
-					<h3>表格评审批注 ({totalAnnotationCount})</h3>
-					<button type="button" class="close-x-btn" onclick={() => (showListModal = false)}>✕</button>
-				</div>
+ {#if showListModal}
+ <ReviewComments entries={(filterCurrentSheetOnly ? currentSheetAnnotations : annotations).map(a => ({ id:a.id, anchor: `${a.sheetName} · ${a.type==='cell' ? a.cellRef : '画笔标注'}`, body:a.body, createdAt:a.createdAt, quote:a.type==='cell' ? a.cellValue : undefined }))} onclose={() => showListModal=false} ondelete={deleteAnnotation} onlocate={(id) => { const a=annotations.find(a=>a.id===id); if(a) jumpToAnnotation(a); }}><label><input type="checkbox" bind:checked={filterCurrentSheetOnly} />仅当前工作表</label></ReviewComments>
+ {/if}
 
-				<div class="drawer-filter-bar">
-					<label class="filter-toggle">
-						<input type="checkbox" bind:checked={filterCurrentSheetOnly} />
-						<span>仅看当前工作表 ({activeSheetName})</span>
-					</label>
-				</div>
-
-				<div class="drawer-list">
-					{#if displayedList.length === 0}
-						<div class="empty-list-hint">
-							<p>暂无批注记录</p>
-							<span>可点击表格单元格添加批注，或切换到画笔标注进行涂鸦。</span>
-						</div>
-					{:else}
-						{#each displayedList as item (item.id)}
-							<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-							<div
-								class="drawer-card"
-								class:active={activeDetailAnnotation?.id === item.id}
-								onclick={() => jumpToAnnotation(item)}
-							>
-								<div class="card-head">
-									<span class="card-type-tag" class:paint={item.type === 'paint'}>
-										{item.type === 'cell' ? `单元格 ${item.cellRef}` : '画笔涂鸦'}
-									</span>
-									<span class="card-sheet-name">{item.sheetName}</span>
-									<button
-										type="button"
-										class="card-del-btn"
-										title="删除批注"
-										onclick={(e) => {
-											e.stopPropagation();
-											deleteAnnotation(item.id);
-										}}
-									>
-										✕
-									</button>
-								</div>
-
-								{#if item.type === 'cell' && item.cellValue}
-									<div class="card-cell-val">数值: {item.cellValue}</div>
-								{/if}
-
-								<p class="card-comment-text">{item.body}</p>
-
-								<div class="card-footer">
-									<span class="card-time">{new Date(item.createdAt).toLocaleTimeString()}</span>
-									<span class="card-jump-link">跳转定位 ➔</span>
-								</div>
-							</div>
-						{/each}
-					{/if}
-				</div>
-
-				<div class="drawer-footer">
-					<button type="button" class="footer-action-btn" onclick={exportAnnotationsJson}>
-						复制/导出全部 JSON
-					</button>
-					<button type="button" class="footer-action-btn" onclick={exportActiveSheetCsv}>
-						导出当前表 CSV
-					</button>
-				</div>
-			</div>
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -1395,294 +1091,8 @@
 	}
 
 	/* Top Header */
-	.excel-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 10px 16px;
-		background: #ffffff;
-		border-bottom: 1px solid #e2e8f0;
-		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-		z-index: 20;
-		gap: 12px;
-	}
-
-	.excel-header button {
-		white-space: nowrap;
-	}
-
-	.file-meta {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-width: 0;
-		/* Filename is the only thing allowed to give way; controls keep
-		   their intrinsic width so labels never compress to one glyph
-		   per line and render as vertical strips. */
-		flex: 1 1 auto;
-	}
-
-	.file-icon {
-		font-size: 24px;
-		line-height: 1;
-	}
-
-	.file-text {
-		display: flex;
-		flex-direction: column;
-		min-width: 0;
-	}
-
-	.file-name {
-		font-size: 14px;
-		font-weight: 700;
-		color: #0f172a;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 320px;
-	}
-
-	.file-sub {
-		font-size: 12px;
-		color: #64748b;
-		white-space: nowrap;
-	}
-
-	.header-actions {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-shrink: 0;
-	}
-
-	.mode-toggles {
-		display: flex;
-		background: #f1f5f9;
-		border-radius: 8px;
-		padding: 3px;
-		gap: 2px;
-	}
-
-	.toggle-btn {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		border: 0;
-		background: transparent;
-		color: #64748b;
-		font-size: 13px;
-		font-weight: 600;
-		padding: 6px 12px;
-		border-radius: 6px;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.toggle-btn:hover {
-		color: #0f172a;
-	}
-
-	.toggle-btn.active {
-		background: #ffffff;
-		color: #0f172a;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-	}
-
-	.zoom-controls {
-		display: flex;
-		align-items: center;
-		background: #f8fafc;
-		border: 1px solid #e2e8f0;
-		border-radius: 8px;
-		overflow: hidden;
-	}
-
-	.zoom-controls button {
-		border: 0;
-		background: transparent;
-		color: #475569;
-		padding: 6px 10px;
-		font-size: 13px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.zoom-controls button:hover:not(:disabled) {
-		background: #e2e8f0;
-	}
-
-	.zoom-controls button:disabled {
-		opacity: 0.35;
-		cursor: not-allowed;
-	}
-
-	.zoom-val {
-		min-width: 52px;
-		text-align: center;
-	}
-
-	.ann-btn {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		border: 1px solid #e2e8f0;
-		background: #ffffff;
-		color: #334155;
-		padding: 6px 14px;
-		border-radius: 8px;
-		font-size: 13px;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-
-	.ann-btn:hover {
-		border-color: #cbd5e1;
-		background: #f8fafc;
-	}
-
-	.ann-btn.has-ann {
-		border-color: #10b981;
-		color: #065f46;
-		background: #ecfdf5;
-	}
-
-	.ann-badge {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		background: #10b981;
-		color: #ffffff;
-		font-size: 11px;
-		font-weight: 700;
-		border-radius: 999px;
-		min-width: 18px;
-		height: 18px;
-		padding: 0 5px;
-	}
 
 	/* Floating Brush Toolbar */
-	.brush-toolbar {
-		position: absolute;
-		top: 64px;
-		left: 50%;
-		transform: translateX(-50%);
-		z-index: 30;
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 6px 14px;
-		background: #1e293b;
-		color: #f8fafc;
-		border-radius: 999px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-	}
-
-	.color-picker {
-		display: flex;
-		gap: 6px;
-	}
-
-	.color-dot {
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		border: 2px solid transparent;
-		cursor: pointer;
-		transition: transform 0.1s;
-		padding: 0;
-	}
-
-	.color-dot.active {
-		transform: scale(1.2);
-		border-color: #ffffff;
-	}
-
-	.divider {
-		width: 1px;
-		height: 18px;
-		background: #475569;
-	}
-
-	.size-picker {
-		display: flex;
-		gap: 6px;
-	}
-
-	.size-dot {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		background: transparent;
-		border: 1px solid transparent;
-		border-radius: 4px;
-		cursor: pointer;
-		padding: 0;
-	}
-
-	.size-dot span {
-		background: #f8fafc;
-		border-radius: 50%;
-	}
-
-	.size-dot.active {
-		background: #334155;
-		border-color: #64748b;
-	}
-
-	.tool-btn {
-		border: 0;
-		background: transparent;
-		color: #cbd5e1;
-		font-size: 12px;
-		font-weight: 600;
-		padding: 4px 8px;
-		border-radius: 4px;
-		cursor: pointer;
-	}
-
-	.tool-btn:hover:not(:disabled) {
-		background: #334155;
-		color: #ffffff;
-	}
-
-	.tool-btn:disabled {
-		opacity: 0.3;
-		cursor: not-allowed;
-	}
-
-	.save-draft-btn {
-		border: 0;
-		background: #2563eb;
-		color: #ffffff;
-		font-size: 12px;
-		font-weight: 700;
-		padding: 5px 12px;
-		border-radius: 999px;
-		cursor: pointer;
-	}
-
-	.save-draft-btn:hover {
-		background: #1d4ed8;
-	}
-
-	.close-brush-btn {
-		border: 0;
-		background: transparent;
-		color: #94a3b8;
-		font-size: 12px;
-		font-weight: 600;
-		padding: 4px 8px;
-		border-radius: 4px;
-		cursor: pointer;
-	}
-
-	.close-brush-btn:hover {
-		color: #ffffff;
-	}
 
 	/* Formula Bar */
 	.formula-bar {
@@ -1941,11 +1351,11 @@
 		cursor: pointer;
 		pointer-events: auto;
 		filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
-		transition: transform 0.1s;
+		transition: filter 0.1s;
 	}
 
 	.badge-marker:hover {
-		transform: scale(1.15);
+		filter: drop-shadow(0 2px 5px rgba(37, 99, 235, 0.5));
 	}
 
 	/* Drawing Canvas Layer */
@@ -2004,22 +1414,19 @@
 		cursor: crosshair;
 	}
 
+	.table-scroll-container.brush-active {
+		touch-action: none;
+		overscroll-behavior: none;
+	}
+
 	.drawing-canvas-layer.active {
+		touch-action: none;
+		user-select: none;
+		-webkit-user-select: none;
 		pointer-events: auto;
 	}
 
 	/* Footer & Sheet Tabs */
-	.excel-footer {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 4px 16px;
-		background: #ffffff;
-		border-top: 1px solid #cbd5e1;
-		z-index: 20;
-		gap: 12px;
-		overflow-x: auto;
-	}
 
 	.sheet-tabs {
 		display: flex;
@@ -2070,28 +1477,6 @@
 		justify-content: center;
 	}
 
-	.footer-actions {
-		display: flex;
-		gap: 8px;
-		flex-shrink: 0;
-	}
-
-	.footer-btn {
-		border: 1px solid #e2e8f0;
-		background: #ffffff;
-		color: #475569;
-		font-size: 12px;
-		font-weight: 600;
-		padding: 5px 10px;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-
-	.footer-btn:hover {
-		background: #f8fafc;
-		color: #0f172a;
-	}
-
 	/* Toast */
 	.notice-toast {
 		position: fixed;
@@ -2109,440 +1494,18 @@
 	}
 
 	/* Modals & Backdrop */
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(15, 23, 42, 0.45);
-		backdrop-filter: blur(3px);
-		z-index: 90;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 16px;
-	}
-
-	.composer-modal {
-		background: #ffffff;
-		border-radius: 12px;
-		width: min(520px, 100%);
-		padding: 20px;
-		box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-	}
-
-	.composer-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-
-	.composer-header h3 {
-		margin: 0;
-		font-size: 16px;
-		color: #0f172a;
-	}
-
-	.close-x-btn {
-		border: 0;
-		background: transparent;
-		color: #94a3b8;
-		font-size: 18px;
-		cursor: pointer;
-		padding: 4px;
-	}
-
-	.close-x-btn:hover {
-		color: #0f172a;
-	}
-
-	.cell-context-box {
-		background: #f8fafc;
-		border: 1px solid #e2e8f0;
-		border-radius: 8px;
-		padding: 10px 12px;
-		font-size: 12px;
-		color: #475569;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.cell-context-box code {
-		font-family: ui-monospace, monospace;
-		background: #e2e8f0;
-		padding: 1px 6px;
-		border-radius: 4px;
-		color: #0f172a;
-	}
-
-	.ctx-formula {
-		margin-left: 8px;
-		color: #2563eb;
-		font-family: monospace;
-	}
-
-	.composer-modal textarea {
-		width: 100%;
-		border: 1px solid #cbd5e1;
-		border-radius: 8px;
-		padding: 10px;
-		font-size: 14px;
-		font-family: inherit;
-		resize: vertical;
-		outline: none;
-	}
-
-	.composer-modal textarea:focus {
-		border-color: #2563eb;
-		box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-	}
-
-	.composer-footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-
-	.btn-secondary {
-		border: 1px solid #cbd5e1;
-		background: #ffffff;
-		color: #475569;
-		padding: 7px 14px;
-		border-radius: 6px;
-		font-size: 13px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.btn-primary {
-		border: 0;
-		background: #2563eb;
-		color: #ffffff;
-		padding: 7px 16px;
-		border-radius: 6px;
-		font-size: 13px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
-
-	.btn-danger {
-		border: 1px solid #fecaca;
-		background: #fef2f2;
-		color: #dc2626;
-		padding: 7px 14px;
-		border-radius: 6px;
-		font-size: 13px;
-		font-weight: 600;
-		cursor: pointer;
-	}
 
 	/* Detail Card Modal */
-	.detail-card-modal {
-		background: #ffffff;
-		border-radius: 12px;
-		width: min(480px, 100%);
-		padding: 20px;
-		box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.detail-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-
-	.detail-badge-title {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.tag-cell {
-		background: #dbeafe;
-		color: #1d4ed8;
-		font-size: 11px;
-		font-weight: 700;
-		padding: 2px 8px;
-		border-radius: 4px;
-	}
-
-	.tag-paint {
-		background: #fef3c7;
-		color: #b45309;
-		font-size: 11px;
-		font-weight: 700;
-		padding: 2px 8px;
-		border-radius: 4px;
-	}
-
-	.detail-quote {
-		background: #f8fafc;
-		border-left: 3px solid #2563eb;
-		padding: 8px 12px;
-		font-size: 12px;
-		color: #475569;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.detail-quote code {
-		font-family: ui-monospace, monospace;
-		font-weight: 600;
-		color: #0f172a;
-	}
-
-	.detail-body {
-		font-size: 14px;
-		line-height: 1.6;
-		color: #1e293b;
-		white-space: pre-wrap;
-		padding: 4px 0;
-	}
-
-	.detail-meta {
-		font-size: 11px;
-		color: #94a3b8;
-	}
-
-	.detail-actions {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-top: 6px;
-	}
 
 	/* Drawer Panel */
-	.drawer-panel {
-		position: fixed;
-		top: 0;
-		right: 0;
-		bottom: 0;
-		width: min(440px, 100%);
-		background: #ffffff;
-		box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
-		display: flex;
-		flex-direction: column;
-		z-index: 95;
-	}
-
-	.drawer-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 16px 20px;
-		border-bottom: 1px solid #e2e8f0;
-	}
-
-	.drawer-header h3 {
-		margin: 0;
-		font-size: 16px;
-		color: #0f172a;
-	}
-
-	.drawer-filter-bar {
-		padding: 10px 20px;
-		background: #f8fafc;
-		border-bottom: 1px solid #e2e8f0;
-		font-size: 13px;
-		color: #475569;
-	}
-
-	.filter-toggle {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		cursor: pointer;
-	}
-
-	.drawer-list {
-		flex: 1;
-		overflow-y: auto;
-		padding: 16px 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.empty-list-hint {
-		text-align: center;
-		color: #94a3b8;
-		padding: 60px 20px;
-	}
-
-	.empty-list-hint p {
-		font-size: 15px;
-		font-weight: 600;
-		margin-bottom: 6px;
-	}
-
-	.empty-list-hint span {
-		font-size: 12px;
-	}
-
-	.drawer-card {
-		border: 1px solid #e2e8f0;
-		border-radius: 10px;
-		padding: 12px;
-		background: #ffffff;
-		cursor: pointer;
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		transition: all 0.15s;
-	}
-
-	.drawer-card:hover {
-		border-color: #2563eb;
-		box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-	}
-
-	.card-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		font-size: 12px;
-	}
-
-	.card-type-tag {
-		background: #eff6ff;
-		color: #2563eb;
-		font-weight: 700;
-		padding: 2px 6px;
-		border-radius: 4px;
-	}
-
-	.card-type-tag.paint {
-		background: #fef3c7;
-		color: #b45309;
-	}
-
-	.card-sheet-name {
-		color: #64748b;
-		font-weight: 600;
-		flex: 1;
-		margin-left: 8px;
-	}
-
-	.card-del-btn {
-		border: 0;
-		background: transparent;
-		color: #94a3b8;
-		cursor: pointer;
-		font-size: 14px;
-		padding: 2px 6px;
-	}
-
-	.card-del-btn:hover {
-		color: #ef4444;
-	}
-
-	.card-cell-val {
-		font-size: 12px;
-		color: #64748b;
-		background: #f8fafc;
-		padding: 4px 8px;
-		border-radius: 4px;
-		font-family: monospace;
-	}
-
-	.card-comment-text {
-		margin: 0;
-		font-size: 13px;
-		line-height: 1.5;
-		color: #1e293b;
-		white-space: pre-wrap;
-	}
-
-	.card-footer {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		font-size: 11px;
-		color: #94a3b8;
-		border-top: 1px solid #f1f5f9;
-		padding-top: 6px;
-	}
-
-	.card-jump-link {
-		color: #2563eb;
-		font-weight: 600;
-	}
-
-	.drawer-footer {
-		display: flex;
-		gap: 10px;
-		padding: 14px 20px;
-		border-top: 1px solid #e2e8f0;
-		background: #f8fafc;
-	}
-
-	.footer-action-btn {
-		flex: 1;
-		border: 1px solid #cbd5e1;
-		background: #ffffff;
-		color: #334155;
-		padding: 8px 12px;
-		border-radius: 6px;
-		font-size: 12px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.footer-action-btn:hover {
-		background: #f1f5f9;
-		border-color: #94a3b8;
-	}
 
 	/* Mobile responsive adjustments */
 	@media (max-width: 768px) {
 		/* Let the header grow into rows instead of crushing its controls. */
-		.excel-header {
-			padding: 8px 12px;
-			height: auto;
-			flex-wrap: wrap;
-			align-items: flex-start;
-			row-gap: 8px;
-		}
-		.file-meta {
-			flex: 1 1 100%;
-		}
-		.header-actions {
-			max-width: 100%;
-			overflow-x: auto;
-			scrollbar-width: none;
-		}
-		.header-actions::-webkit-scrollbar {
-			display: none;
-		}
-
-		.file-name {
-			max-width: 140px;
-		}
-
-		.zoom-controls {
-			display: none;
-		}
 
 		.stats-strip {
 			display: none;
 		}
 
-		.brush-toolbar {
-			top: auto;
-			bottom: 60px;
-			width: 92%;
-			justify-content: space-around;
-		}
 	}
 </style>
