@@ -49,7 +49,25 @@
    resizeFrame = requestAnimationFrame(resize);
   });
   observer.observe(doc.body);
-  stopHtml = () => { cancelAnimationFrame(resizeFrame); observer.disconnect(); doc.removeEventListener('selectionchange', handleSelectionChange); };
+  // Interactive pages can replace text without changing their layout size.
+  // Watch the document root so replacing <body> does not orphan the observer.
+  let highlightFrame = 0;
+  const mutations = new MutationObserver(() => {
+   if (highlightFrame) return;
+   highlightFrame = requestAnimationFrame(() => {
+    highlightFrame = 0;
+    resize();
+    renderHighlights();
+   });
+  });
+  mutations.observe(doc.documentElement, {childList: true, subtree: true, characterData: true});
+  stopHtml = () => {
+   cancelAnimationFrame(resizeFrame);
+   cancelAnimationFrame(highlightFrame);
+   observer.disconnect();
+   mutations.disconnect();
+   doc.removeEventListener('selectionchange', handleSelectionChange);
+  };
   isLoading = false;
   resize();
   void tick().then(() => { fitToWidth(); renderHighlights(); });
